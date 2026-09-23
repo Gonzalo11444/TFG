@@ -1,0 +1,49 @@
+# ==========================================
+# Archivos específicos solicitados
+# ==========================================
+# Ejecutables
+*.exe
+TwitchDownloaderCLI.exe
+
+# Archivos de audio y vídeo descargados
+*.m4a
+*.mp4
+*.mp3
+*.wav
+audio.m4a
+
+# Descargas de chat y salidas JSON temporales
+chat.json
+*chat*.json
+
+# Carpeta de descargas generada por la aplicación
+downloads/
+**/downloads/
+
+# ==========================================
+# Entorno de Python y Caché
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Entornos virtuales
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# ==========================================
+# IDEs y Editores del sistema
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
