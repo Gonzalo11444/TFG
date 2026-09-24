@@ -11,15 +11,12 @@ class TwitchDescarga:
         self.cli_path = self._localizar_binario(path)
         self.carpeta_salida.mkdir(parents=True, exist_ok=True)
 
-
     def _localizar_binario(self, path: str) -> Path:
         encontrado = shutil.which(path) #Busca el binario en el PATH del sistema
         ruta = Path(encontrado) if encontrado else Path(path)   #Si no lo encuentra, asume que está en la ruta directa que le pasamos
 
-        if not ruta.exists(): #Comprueba si el archivo existe
-            raise FileNotFoundError(
-                f"No se ha encontrado el binario en: '{ruta.resolve()}'."
-            )
+        if not ruta.exists():
+            raise FileNotFoundError(f"Ejecutable no encontrado en: '{ruta.resolve()}'.")
         
         return ruta
 
@@ -66,11 +63,7 @@ class TwitchDescarga:
         return archivo_salida
 
 
-    def descargar_chat(self, url_twitch: str) -> Path:
-        """
-        Descarga el chat completo del VOD en formato JSON estructurado.
-        Muestra el progreso en la terminal en tiempo real.
-        """
+    def descargar_chat(self, url_twitch: str) -> Path: #Descarga el chat del VOD en formato JSON estructurado
         if not url_twitch or not url_twitch.strip():
             raise ValueError("La URL de Twitch no puede estar vacía.")
 
@@ -112,30 +105,18 @@ class TwitchDescarga:
         return archivo_salida
 
 
-# --- BLOQUE DE PRUEBA (FASE 1 COMPLETA) ---
 if __name__ == "__main__":
-    VOD_EJEMPLO = input("Ingresa url del VOD de Twitch: ")
-
-    print("==================================================")
-    print("      INICIANDO PIPELINE DE FASE 1: INGESTA       ")
-    print("==================================================")
-
+    vod = input("URL o ID del VOD de Twitch: ").strip()
+    if not vod:
+        print("URL no válida.")
+        sys.exit(1)
     try:
-        downloader = TwitchDescarga()
-
-        # 1. Tarea 1: Audio
-        ruta_audio = downloader.descargar_audio(VOD_EJEMPLO)
-
-        # 2. Tarea 2: Chat
-        ruta_chat = downloader.descargar_chat(VOD_EJEMPLO)
-
-        # 3. Verificación final de entregables de Fase 1
-        print("\n==================================================")
-        print("          RESUMEN DE SALIDAS OBTENIDAS            ")
-        print("==================================================")
-        print(f"-> Audio M4A: {ruta_audio.resolve()} (Existe: {ruta_audio.exists()})")
-        print(f"-> Chat JSON: {ruta_chat.resolve()} (Existe: {ruta_chat.exists()})")
-        print("¡Fase 1 completada con éxito!")
-
+        descargador = TwitchDescarga()
+        ruta_audio = descargador.descargar_audio(vod)
+        ruta_chat = descargador.descargar_chat(vod)
+        print("\nDescargas completadas:")
+        print(f"- Audio: {ruta_audio.resolve()}")
+        print(f"- Chat:  {ruta_chat.resolve()}")
     except Exception as e:
-        print(f"\n[FATAL] Ocurrió un error en el pipeline: {e}")
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
