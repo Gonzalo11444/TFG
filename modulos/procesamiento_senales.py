@@ -117,7 +117,7 @@ if __name__ == "__main__":
     CHAT = Path("downloads/chat.json")
 
     # Limite en segundos para pruebas rápidas (None para procesar todo el VOD)
-    LIMITE = 60
+    LIMITE = None      
 
     try:
         procesador = ProcesadorSenales(AUDIO, CHAT)
