@@ -1,15 +1,15 @@
 """
 app.py
 
-Ventana principal de la interfaz gráfica
-Ensambla el panel lateral de candidatos con el reproductor de vídeo
-para la inspección y aprobación final de clips.
+Ventana principal de la interfaz gráfica (Fase 4 del TFG).
+Ensambla el panel lateral de candidatos, el reproductor de vídeo integrado,
+el panel de detalles de inspección enriquecida y el clasificador visual CLIP.
 """
 
 from pathlib import Path
 import json
 import sys
-from dataclasses import asdict
+import threading
 import customtkinter as ctk
 
 # Ajustamos rutas de importación si se ejecuta directamente
@@ -25,6 +25,19 @@ try:
 except ImportError:
     from ui.componentes.lista_clips import CandidatoClip
 
+try:
+    from modulos.clasificador_clip import ClasificadorVisual, COLORES_CATEGORIA
+except ImportError:
+    ClasificadorVisual = None
+    COLORES_CATEGORIA = {
+        "Gameplay": "#2e7d32",
+        "Charla / Cámara": "#1565c0",
+        "Reacción / Risa": "#f57c00",
+        "Menú / Carga": "#546e7a",
+        "Pantalla Final / Despedida": "#c62828",
+        "Sin clasificar": "#424242"
+    }
+
 
 class AppValidacionClips(ctk.CTk):
     # Constructor de la ventana principal: configura dimensiones, tema y componentes
@@ -36,8 +49,11 @@ class AppValidacionClips(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self.title("AutoClip Twitch - Inspección y Validación de Clips (Fase 4)")
-        self.geometry("1100x680")
-        self.minsize(900, 550)
+        self.geometry("1180x720")
+        self.minsize(950, 600)
+
+        # Control de estado de fondo
+        self._analizando_ia = False
 
         # Resolución de la carpeta de clips candidatos
         self.carpeta_candidatos = self._localizar_carpeta_candidatos(ruta_candidatos)
@@ -69,29 +85,78 @@ class AppValidacionClips(ctk.CTk):
         # Ruta por defecto aunque aún no exista
         return Path("modulos/downloads/candidatos")
 
-    # Distribuye el panel lateral, el reproductor y la barra inferior en una cuadrícula (grid)
+    # Distribuye el panel lateral, el reproductor, panel de detalles y la barra inferior
     def _construir_layout(self) -> None:
         self.grid_rowconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=0)
-        self.grid_columnconfigure(0, weight=0, minsize=340)
+        self.grid_rowconfigure(2, weight=0)
+        self.grid_columnconfigure(0, weight=0, minsize=380)
         self.grid_columnconfigure(1, weight=1)
 
-        # 1. Panel lateral izquierdo (Lista de clips)
+        # 1. Panel lateral izquierdo (Lista de clips con cabecera y botón IA)
         self.panel_clips = PanelListaClips(
             self,
-            width=340,
+            width=380,
             on_clip_seleccionado=self._on_clip_seleccionado,
-            on_estado_cambiado=self._actualizar_estadisticas
+            on_estado_cambiado=self._actualizar_estadisticas,
+            on_lanzar_ia=self._iniciar_analisis_ia
         )
-        self.panel_clips.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=(10, 5))
+        self.panel_clips.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(10, 5), pady=(10, 5))
 
         # 2. Área principal derecha (Reproductor VLC)
         self.reproductor = ReproductorVideo(self)
-        self.reproductor.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=(10, 5))
+        self.reproductor.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=(10, 4))
 
-        # 3. Barra inferior de estado y acciones
+        # 3. Panel de inspección y detalles del clip activo
+        self.panel_detalles = ctk.CTkFrame(
+            self,
+            corner_radius=6,
+            fg_color="#1e1e1e",
+            border_width=1,
+            border_color="#333333"
+        )
+        self.panel_detalles.grid(row=1, column=1, sticky="ew", padx=(5, 10), pady=(0, 6))
+        self.panel_detalles.grid_columnconfigure(0, weight=1)
+
+        # Fila superior de detalles: Título de clip y Badge de categoría
+        self.lbl_detalle_titulo = ctk.CTkLabel(
+            self.panel_detalles,
+            text="Ningún clip seleccionado",
+            font=("Arial", 12, "bold"),
+            anchor="w"
+        )
+        self.lbl_detalle_titulo.grid(row=0, column=0, sticky="w", padx=12, pady=(6, 2))
+
+        self.frame_detalle_badge = ctk.CTkFrame(
+            self.panel_detalles,
+            corner_radius=6,
+            fg_color="#424242"
+        )
+        self.frame_detalle_badge.grid(row=0, column=1, sticky="e", padx=12, pady=(6, 2))
+
+        self.lbl_detalle_badge = ctk.CTkLabel(
+            self.frame_detalle_badge,
+            text="Sin clasificar",
+            font=("Arial", 10, "bold"),
+            text_color="white",
+            padx=8,
+            pady=2
+        )
+        self.lbl_detalle_badge.pack()
+
+        # Fila inferior de detalles: Desglose de puntuación y ponderación
+        self.lbl_detalle_metricas = ctk.CTkLabel(
+            self.panel_detalles,
+            text="Score Algorítmico: --  |  Estimación: Audio (50%) + Chat (50%)",
+            font=("Arial", 11),
+            text_color="#aaaaaa",
+            anchor="w"
+        )
+        self.lbl_detalle_metricas.grid(row=1, column=0, columnspan=2, sticky="w", padx=12, pady=(0, 6))
+
+        # 4. Barra inferior de estado global y acciones
         self.barra_inferior = ctk.CTkFrame(self, height=45, corner_radius=6)
-        self.barra_inferior.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
+        self.barra_inferior.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
         self.barra_inferior.grid_columnconfigure(0, weight=1)
 
         self.lbl_estado = ctk.CTkLabel(
@@ -130,6 +195,106 @@ class AppValidacionClips(ctk.CTk):
         else:
             print(f"[Aviso] El clip no tiene archivo físico en disco: {clip}")
 
+        self._actualizar_panel_detalles(clip)
+
+    # Actualiza los textos y distintivos del panel de detalles inferior
+    def _actualizar_panel_detalles(self, clip: CandidatoClip) -> None:
+        duracion = clip.segundo_fin - clip.segundo_inicio
+        nombre = clip.ruta_video.name if clip.ruta_video else "Clip"
+        self.lbl_detalle_titulo.configure(
+            text=f"Clip Activo: {nombre}  |  [{clip.segundo_inicio}s -> {clip.segundo_fin}s] ({duracion}s)"
+        )
+
+        color = COLORES_CATEGORIA.get(clip.categoria, "#424242")
+        self.frame_detalle_badge.configure(fg_color=color)
+
+        if clip.confianza_ia > 0:
+            porcentaje = int(round(clip.confianza_ia * 100))
+            texto_badge = f"{clip.categoria} ({porcentaje}%)"
+        else:
+            texto_badge = clip.categoria
+
+        self.lbl_detalle_badge.configure(text=texto_badge)
+        self.lbl_detalle_metricas.configure(
+            text=f"Score Algorítmico: {clip.puntuacion:.2f}  |  Estimación: Audio (50%) + Chat (50%)"
+        )
+
+    # Lanza la inferencia de CLIP en un hilo secundario para no bloquear la interfaz
+    def _iniciar_analisis_ia(self) -> None:
+        if self._analizando_ia:
+            return
+
+        if not self.panel_clips.clips:
+            self.lbl_estado.configure(text="No hay clips candidatos cargados para analizar.")
+            return
+
+        self._analizando_ia = True
+        self.panel_clips.establecer_estado_analisis(True, "Cargando modelo CLIP...", 0.05)
+        self.lbl_estado.configure(text="Ejecutando clasificación visual con IA (OpenAI CLIP)...")
+
+        def tarea_fondo():
+            try:
+                if ClasificadorVisual is None:
+                    raise ImportError("Módulo ClasificadorVisual no disponible.")
+
+                clasificador = ClasificadorVisual()
+                total = len(self.panel_clips.clips)
+
+                def callback_progreso(actual: int, total_clips: int, clip_actualizado: CandidatoClip):
+                    progreso = actual / total_clips
+                    indice = actual - 1
+                    texto = f"Analizando clip {actual} de {total_clips}..."
+
+                    def en_hilo_principal(i=indice, c=clip_actualizado, t=texto, p=progreso):
+                        self.panel_clips.actualizar_clip_ia(i, c)
+                        self.panel_clips.establecer_estado_analisis(True, t, p)
+                        if self.panel_clips._indice_seleccionado == i:
+                            self._actualizar_panel_detalles(c)
+
+                    try:
+                        self.after(0, en_hilo_principal)
+                    except Exception:
+                        pass
+
+                clips_clasificados = clasificador.clasificar_candidatos(
+                    self.panel_clips.clips,
+                    callback_progreso=callback_progreso
+                )
+
+                def al_terminar():
+                    self._analizando_ia = False
+                    self.panel_clips.establecer_estado_analisis(
+                        False,
+                        f"¡Clasificación completada! ({len(clips_clasificados)} clips)",
+                        1.0
+                    )
+                    self.lbl_estado.configure(
+                        text=f"Análisis visual completado con éxito ({len(clips_clasificados)} clips clasificados)"
+                    )
+                    if self.panel_clips._indice_seleccionado is not None:
+                        idx = self.panel_clips._indice_seleccionado
+                        if idx < len(self.panel_clips.clips):
+                            self._actualizar_panel_detalles(self.panel_clips.clips[idx])
+
+                try:
+                    self.after(0, al_terminar)
+                except Exception:
+                    pass
+
+            except Exception as error:
+                def al_fallar(err=error):
+                    self._analizando_ia = False
+                    self.panel_clips.establecer_estado_analisis(False, f"Error: {err}", 0.0)
+                    self.lbl_estado.configure(text=f"Error en análisis IA: {err}")
+
+                try:
+                    self.after(0, al_fallar)
+                except Exception:
+                    pass
+
+        hilo = threading.Thread(target=tarea_fondo, daemon=True)
+        hilo.start()
+
     # Consulta al panel de clips el recuento actual y actualiza el texto inferior
     def _actualizar_estadisticas(self) -> None:
         total, aprobados, descartados = self.panel_clips.obtener_conteo_estados()
@@ -151,6 +316,8 @@ class AppValidacionClips(ctk.CTk):
                 "segundo_fin": c.segundo_fin,
                 "duracion": c.segundo_fin - c.segundo_inicio,
                 "puntuacion": c.puntuacion,
+                "categoria": c.categoria,
+                "confianza_ia": round(c.confianza_ia, 4),
                 "archivo": str(c.ruta_video.resolve()) if c.ruta_video else None
             })
 

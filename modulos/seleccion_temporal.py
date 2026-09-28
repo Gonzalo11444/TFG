@@ -24,6 +24,9 @@ class CandidatoClip:
     segundo_fin: int
     puntuacion: float
     ruta_video: Path | None = None
+    categoria: str = "Sin clasificar"
+    confianza_ia: float = 0.0
+    aprobado: bool = False
 
 
 class SelectorMomentos:
