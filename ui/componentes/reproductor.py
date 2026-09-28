@@ -6,6 +6,7 @@ Incrusta la superficie de renderizado de VLC en Windows mediante HWND nativo.
 """
 
 from pathlib import Path
+import threading
 import tkinter as tk
 import customtkinter as ctk
 import vlc
@@ -21,9 +22,11 @@ class ReproductorVideo(ctk.CTkFrame):
         self._arrastrando_slider = False
         self._duracion_ms = 0
         self._loop_progreso_id = None
+        self._timer_iniciar_id = None
+        self._hwnd_vinculado = False
 
-        # Inicialización del motor VLC
-        self.vlc_instance = vlc.Instance("--no-xlib", "--quiet")
+        # Inicialización del motor VLC con flags seguras para Windows
+        self.vlc_instance = vlc.Instance("--no-xlib", "--quiet", "--no-video-title-show")
         self.player = self.vlc_instance.media_player_new()
 
         # Construcción visual de la pantalla y controles
@@ -108,19 +111,42 @@ class ReproductorVideo(ctk.CTkFrame):
         self.slider_volumen.set(80)
         self.slider_volumen.grid(row=0, column=5, padx=(2, 0))
 
-    # Conecta el identificador HWND de la ventana de Windows con VLC
-    def _vincular_ventana_vlc(self) -> None:
-        self.frame_pantalla.update_idletasks()
-        hwnd = self.frame_pantalla.winfo_id()
-        self.player.set_hwnd(hwnd)
+    # Conecta el identificador HWND de la ventana de Windows con VLC solo si el widget está mapeado
+    def _vincular_ventana_vlc(self) -> bool:
+        if self._hwnd_vinculado:
+            return True
+
+        try:
+            self.update_idletasks()
+            self.frame_pantalla.update_idletasks()
+
+            # Verificamos que el Frame de dibujo esté efectivamente mapeado y visible en pantalla
+            if not self.frame_pantalla.winfo_ismapped():
+                return False
+
+            hwnd = self.frame_pantalla.winfo_id()
+            if hwnd and hwnd != 0:
+                self.player.set_hwnd(hwnd)
+                self._hwnd_vinculado = True
+                return True
+        except Exception as error:
+            print(f"[Reproductor] Aviso al vincular HWND con VLC: {error}")
+
+        return False
 
     # Carga un archivo de vídeo local y lo prepara para reproducir
-    def cargar_video(self, ruta_video: Path | str) -> None:
-        ruta = Path(ruta_video).resolve()
-        if not ruta.exists():
-            print(f"Vídeo no encontrado: {ruta}")
+    def cargar_video(self, ruta_video: Path | str, auto_play: bool = True) -> None:
+        # Garantizamos que la llamada ocurra estrictamente en el hilo de Tkinter
+        if threading.current_thread() != threading.main_thread():
+            self.after(0, lambda: self.cargar_video(ruta_video, auto_play=auto_play))
             return
 
+        ruta = Path(ruta_video).resolve()
+        if not ruta.exists():
+            print(f"[Reproductor] Archivo no encontrado: {ruta}")
+            return
+
+        # Detenemos cualquier reproducción previa y cancelamos arranques pendientes
         self.detener()
         self.ruta_actual = ruta
 
@@ -128,15 +154,29 @@ class ReproductorVideo(ctk.CTkFrame):
         media = self.vlc_instance.media_new(str(ruta))
         self.player.set_media(media)
 
-        # Enlazamos la pantalla negra con el reproductor
-        self._vincular_ventana_vlc()
+        # Retrasamos 150 ms la vinculación y reproducción para que Windows DWM y Tkinter
+        # completen el mapeo del frame_pantalla en pantalla
+        def _iniciar_seguro():
+            # Si el frame aún no está mapeado en pantalla, reprogramamos un instante después
+            if not self.frame_pantalla.winfo_ismapped():
+                self._timer_iniciar_id = self.after(100, _iniciar_seguro)
+                return
 
-        # Iniciamos la reproducción
-        self.reproducir()
-        self.btn_play.configure(text="⏸")
+            self._vincular_ventana_vlc()
+            if auto_play:
+                self.player.play()
+                self.btn_play.configure(text="⏸")
+                self._iniciar_bucle_progreso()
+            self._timer_iniciar_id = None
+
+        self._timer_iniciar_id = self.after(150, _iniciar_seguro)
 
     # Inicia la reproducción del vídeo
     def reproducir(self) -> None:
+        if threading.current_thread() != threading.main_thread():
+            self.after(0, self.reproducir)
+            return
+
         self._vincular_ventana_vlc()
         self.player.play()
         self.btn_play.configure(text="⏸")
@@ -144,16 +184,34 @@ class ReproductorVideo(ctk.CTkFrame):
 
     # Pausa el vídeo sin reiniciar el tiempo
     def pausar(self) -> None:
+        if threading.current_thread() != threading.main_thread():
+            self.after(0, self.pausar)
+            return
+
         self.player.pause()
         self.btn_play.configure(text="▶")
 
-    # Detiene el vídeo y reinicia la barra de tiempo a cero
+    # Detiene el vídeo de forma limpia y reinicia controles
     def detener(self) -> None:
-        self.player.stop()
+        if threading.current_thread() != threading.main_thread():
+            self.after(0, self.detener)
+            return
+
+        if self._timer_iniciar_id is not None:
+            self.after_cancel(self._timer_iniciar_id)
+            self._timer_iniciar_id = None
+
+        self._detener_bucle_progreso()
+
+        if self.player:
+            try:
+                self.player.stop()
+            except Exception:
+                pass
+
         self.btn_play.configure(text="▶")
         self.slider_tiempo.set(0.0)
         self.lbl_tiempo.configure(text="00:00 / 00:00")
-        self._detener_bucle_progreso()
 
     # Alterna entre Play y Pausa según el estado actual
     def _alternar_reproduccion(self) -> None:

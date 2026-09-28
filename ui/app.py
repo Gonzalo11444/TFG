@@ -7,19 +7,23 @@ el panel de detalles de inspección enriquecida y el clasificador visual CLIP.
 """
 
 from pathlib import Path
+from typing import Callable
 import json
 import sys
 import threading
 import customtkinter as ctk
 
-# Ajustamos rutas de importación si se ejecuta directamente
+# Aseguramos que la raíz del proyecto esté en sys.path
 directorio_raiz = Path(__file__).resolve().parents[1]
 if str(directorio_raiz) not in sys.path:
     sys.path.insert(0, str(directorio_raiz))
 
+# Vistas y componentes de la interfaz
+from ui.vistas.inicio import VistaInicio, abrir_carpeta_sistema, purgar_archivos_sesion
 from ui.componentes.reproductor import ReproductorVideo
 from ui.componentes.lista_clips import PanelListaClips
 
+# Importación de modelos y módulos del núcleo
 try:
     from modulos.seleccion_temporal import CandidatoClip
 except ImportError:
@@ -38,64 +42,151 @@ except ImportError:
         "Sin clasificar": "#424242"
     }
 
+try:
+    from modulos.pipeline import PipelineClips
+except ImportError:
+    PipelineClips = None
 
-class AppValidacionClips(ctk.CTk):
-    # Constructor de la ventana principal: configura dimensiones, tema y componentes
+try:
+    from modulos.procesamiento_video import RenderizadorVertical
+except ImportError:
+    RenderizadorVertical = None
+
+
+class VentanaExitoRender(ctk.CTkToplevel):
+    # Ventana modal emergente que confirma la generación de vídeos verticales
+    def __init__(self, master, total_clips: int, carpeta_salida: Path):
+        super().__init__(master)
+        self.carpeta_salida = carpeta_salida
+
+        self.title("Renderizado Finalizado")
+        self.geometry("460x270")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+
+        # Centrar sobre la ventana principal
+        self.transient(master)
+        self.grab_set()
+
+        # Contenido visual
+        lbl_icono = ctk.CTkLabel(self, text="🎉", font=("Arial", 38))
+        lbl_icono.pack(pady=(22, 6))
+
+        lbl_titulo = ctk.CTkLabel(
+            self,
+            text="¡Clips Verticales Generados!",
+            font=("Arial", 16, "bold")
+        )
+        lbl_titulo.pack(pady=(0, 6))
+
+        lbl_msg = ctk.CTkLabel(
+            self,
+            text=f"Se han renderizado {total_clips} vídeo(s) en formato 9:16 (1080x1920)\nlistos para TikTok, Shorts y Reels en:\n{self.carpeta_salida.resolve()}",
+            font=("Arial", 11),
+            text_color="#cccccc",
+            justify="center"
+        )
+        lbl_msg.pack(pady=(0, 20), padx=25)
+
+        frame_acciones = ctk.CTkFrame(self, fg_color="transparent")
+        frame_acciones.pack(pady=(0, 15))
+
+        btn_abrir = ctk.CTkButton(
+            frame_acciones,
+            text="📁 Abrir Carpeta",
+            font=("Arial", 12, "bold"),
+            fg_color="#1f6aa5",
+            hover_color="#144870",
+            command=self._al_abrir_carpeta
+        )
+        btn_abrir.pack(side="left", padx=8)
+
+        btn_cerrar = ctk.CTkButton(
+            frame_acciones,
+            text="Aceptar",
+            font=("Arial", 12),
+            fg_color="#333333",
+            hover_color="#444444",
+            command=self.destroy
+        )
+        btn_cerrar.pack(side="left", padx=8)
+
+    def _al_abrir_carpeta(self) -> None:
+        abrir_carpeta_sistema(self.carpeta_salida)
+        self.destroy()
+
+
+class AppPrendeClips(ctk.CTk):
+    # Ventana principal: coordina la navegación y la ejecución de tareas asíncronas
     def __init__(self, ruta_candidatos: str | Path | None = None):
         super().__init__()
 
-        # Configuración estética global
+        # Apariencia global
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        self.title("AutoClip Twitch - Inspección y Validación de Clips (Fase 4)")
-        self.geometry("1180x720")
-        self.minsize(950, 600)
+        self.title("PrendeClips - Pipeline End-to-End de Twitch")
+        self.geometry("1200x750")
+        self.minsize(980, 620)
 
-        # Control de estado de fondo
+        # Variables de control de estado de hilos
+        self._ejecutando_pipeline = False
         self._analizando_ia = False
+        self._renderizando_vertical = False
 
-        # Resolución de la carpeta de clips candidatos
-        self.carpeta_candidatos = self._localizar_carpeta_candidatos(ruta_candidatos)
+        # Configuración de rutas
+        self.carpeta_base = self._localizar_carpeta_base(ruta_candidatos)
+        self.carpeta_candidatos = self.carpeta_base / "candidatos"
+        self.carpeta_verticales = self.carpeta_base / "clips_verticales"
 
-        # Construcción visual
-        self._construir_layout()
+        self.carpeta_candidatos.mkdir(parents=True, exist_ok=True)
+        self.carpeta_verticales.mkdir(parents=True, exist_ok=True)
 
-        # Vinculación del evento de cierre limpio
+        # Contenedor principal de vistas
+        self._construir_vistas()
+
+        # Vinculación del cierre limpio para liberar recursos de VLC
         self.protocol("WM_DELETE_WINDOW", self._al_cerrar)
 
-        # Cargar clips disponibles en disco al iniciar
-        self._cargar_datos_iniciales()
+        # Mostramos la vista de inicio por defecto
+        self.mostrar_vista_inicio()
 
-    # Busca la carpeta donde están guardados los clips candidatos en disco
-    def _localizar_carpeta_candidatos(self, ruta_manual: str | Path | None) -> Path:
+    # Determina la carpeta base para lecturas y descargas
+    def _localizar_carpeta_base(self, ruta_manual: str | Path | None) -> Path:
         if ruta_manual:
-            return Path(ruta_manual)
+            return Path(ruta_manual).resolve()
 
-        posibles_rutas = [
-            Path("downloads/candidatos"),
-            Path("modulos/downloads/candidatos"),
-            directorio_raiz / "modulos" / "downloads" / "candidatos",
-            directorio_raiz / "downloads" / "candidatos",
-        ]
-        for p in posibles_rutas:
-            if p.exists():
-                return p
+        if (directorio_raiz / "modulos" / "downloads").exists():
+            return (directorio_raiz / "modulos" / "downloads").resolve()
 
-        # Ruta por defecto aunque aún no exista
-        return Path("modulos/downloads/candidatos")
+        return (directorio_raiz / "downloads").resolve()
 
-    # Distribuye el panel lateral, el reproductor, panel de detalles y la barra inferior
-    def _construir_layout(self) -> None:
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=0)
-        self.grid_rowconfigure(2, weight=0)
-        self.grid_columnconfigure(0, weight=0, minsize=380)
-        self.grid_columnconfigure(1, weight=1)
-
-        # 1. Panel lateral izquierdo (Lista de clips con cabecera y botón IA)
-        self.panel_clips = PanelListaClips(
+    # Inicializa las dos vistas de la aplicación: Inicio y Validación
+    def _construir_vistas(self) -> None:
+        # 1. Vista de Inicio
+        self.vista_inicio = VistaInicio(
             self,
+            on_iniciar_pipeline=self._ejecutar_pipeline_fondo,
+            on_cargar_existentes=self._ir_a_clips_existentes,
+            on_purgar_completado=self._al_purgar_clips,
+            carpeta_salida=self.carpeta_base
+        )
+
+        # 2. Vista de Validación y Edición (contenedor de inspección)
+        self.frame_validacion = ctk.CTkFrame(self, fg_color="transparent")
+        self._construir_vista_validacion()
+
+    # Construye el layout de inspección con VLC, lista de clips y barra de acciones
+    def _construir_vista_validacion(self) -> None:
+        self.frame_validacion.grid_rowconfigure(0, weight=1)
+        self.frame_validacion.grid_rowconfigure(1, weight=0)
+        self.frame_validacion.grid_rowconfigure(2, weight=0)
+        self.frame_validacion.grid_columnconfigure(0, weight=0, minsize=380)
+        self.frame_validacion.grid_columnconfigure(1, weight=1)
+
+        # 1. Panel lateral izquierdo (Tarjetas de clips)
+        self.panel_clips = PanelListaClips(
+            self.frame_validacion,
             width=380,
             on_clip_seleccionado=self._on_clip_seleccionado,
             on_estado_cambiado=self._actualizar_estadisticas,
@@ -104,12 +195,12 @@ class AppValidacionClips(ctk.CTk):
         self.panel_clips.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(10, 5), pady=(10, 5))
 
         # 2. Área principal derecha (Reproductor VLC)
-        self.reproductor = ReproductorVideo(self)
+        self.reproductor = ReproductorVideo(self.frame_validacion)
         self.reproductor.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=(10, 4))
 
-        # 3. Panel de inspección y detalles del clip activo
+        # 3. Panel de detalles del clip activo
         self.panel_detalles = ctk.CTkFrame(
-            self,
+            self.frame_validacion,
             corner_radius=6,
             fg_color="#1e1e1e",
             border_width=1,
@@ -118,7 +209,6 @@ class AppValidacionClips(ctk.CTk):
         self.panel_detalles.grid(row=1, column=1, sticky="ew", padx=(5, 10), pady=(0, 6))
         self.panel_detalles.grid_columnconfigure(0, weight=1)
 
-        # Fila superior de detalles: Título de clip y Badge de categoría
         self.lbl_detalle_titulo = ctk.CTkLabel(
             self.panel_detalles,
             text="Ningún clip seleccionado",
@@ -144,7 +234,6 @@ class AppValidacionClips(ctk.CTk):
         )
         self.lbl_detalle_badge.pack()
 
-        # Fila inferior de detalles: Desglose de puntuación y ponderación
         self.lbl_detalle_metricas = ctk.CTkLabel(
             self.panel_detalles,
             text="Score Algorítmico: --  |  Estimación: Audio (50%) + Chat (50%)",
@@ -154,50 +243,175 @@ class AppValidacionClips(ctk.CTk):
         )
         self.lbl_detalle_metricas.grid(row=1, column=0, columnspan=2, sticky="w", padx=12, pady=(0, 6))
 
-        # 4. Barra inferior de estado global y acciones
-        self.barra_inferior = ctk.CTkFrame(self, height=45, corner_radius=6)
+        # 4. Barra inferior de acciones y estado
+        self.barra_inferior = ctk.CTkFrame(self.frame_validacion, height=48, corner_radius=6)
         self.barra_inferior.grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
-        self.barra_inferior.grid_columnconfigure(0, weight=1)
+        self.barra_inferior.grid_columnconfigure(1, weight=1)
 
+        # Botón de retroceso hacia la vista de inicio
+        self.btn_volver_inicio = ctk.CTkButton(
+            self.barra_inferior,
+            text="⬅ Volver al Inicio",
+            width=140,
+            font=("Arial", 11, "bold"),
+            fg_color="#2c2c2c",
+            hover_color="#3a3a3a",
+            command=self.mostrar_vista_inicio
+        )
+        self.btn_volver_inicio.grid(row=0, column=0, padx=(10, 5), pady=8)
+
+        # Etiqueta informativa del conteo de clips
         self.lbl_estado = ctk.CTkLabel(
             self.barra_inferior,
-            text="Cargando clips...",
+            text="Esperando selección...",
             font=("Arial", 12)
         )
-        self.lbl_estado.grid(row=0, column=0, sticky="w", padx=15, pady=8)
+        self.lbl_estado.grid(row=0, column=1, sticky="w", padx=10, pady=8)
 
-        self.btn_exportar = ctk.CTkButton(
+        # Botón para exportar selección a JSON
+        self.btn_exportar_json = ctk.CTkButton(
             self.barra_inferior,
-            text="Confirmar y Exportar Selección",
+            text="💾 Guardar JSON",
+            width=120,
+            font=("Arial", 11),
+            fg_color="#37474f",
+            hover_color="#455a64",
+            command=self._exportar_seleccion
+        )
+        self.btn_exportar_json.grid(row=0, column=2, padx=5, pady=8)
+
+        # Botón para renderizar clips aprobados a vertical 9:16
+        self.btn_render_vertical = ctk.CTkButton(
+            self.barra_inferior,
+            text="🎬  Renderizar Vertical (9:16)",
             font=("Arial", 12, "bold"),
             fg_color="#2e7d32",
             hover_color="#1b5e20",
-            command=self._exportar_seleccion
+            command=self._renderizar_verticales
         )
-        self.btn_exportar.grid(row=0, column=1, padx=15, pady=8)
+        self.btn_render_vertical.grid(row=0, column=3, padx=(5, 10), pady=8)
 
-    # Escanea los archivos de clips en disco y llena el panel lateral
-    def _cargar_datos_iniciales(self) -> None:
-        clips = PanelListaClips.escanear_directorio_candidatos(self.carpeta_candidatos)
+    # Cambia la visualización a la vista de bienvenida y libera descriptores de archivo
+    def mostrar_vista_inicio(self) -> None:
+        # Detenemos obligatoriamente la reproducción de VLC antes de ocultar la vista
+        # para liberar el HWND y los descriptores del archivo en Windows
+        try:
+            if hasattr(self, "reproductor") and self.reproductor is not None:
+                self.reproductor.detener()
+        except Exception as e:
+            print(f"[App] Aviso al detener reproductor: {e}")
+
+        self.frame_validacion.pack_forget()
+        self.vista_inicio.pack(fill="both", expand=True)
+        self.update_idletasks()
+
+    # Cambia la visualización a la vista de validación asegurando el mapeo del HWND de VLC
+    def mostrar_vista_validacion(self, clips: list[CandidatoClip] | None = None) -> None:
+        self.vista_inicio.pack_forget()
+        self.frame_validacion.pack(fill="both", expand=True)
+
+        # Forzamos primero update_idletasks para que Tkinter y Windows mapeen los frames
+        self.update_idletasks()
 
         if clips:
             self.panel_clips.cargar_clips(clips)
             self._actualizar_estadisticas()
+            # Retrasamos la selección y vinculación del HWND 150 ms usando self.after(150, ...)
+            self.after(150, self._seleccionar_primer_clip_seguro)
+
+    # Selecciona el primer clip de la lista de forma segura si existen elementos
+    def _seleccionar_primer_clip_seguro(self) -> None:
+        if self.panel_clips.clips:
+            self.panel_clips.seleccionar_clip(0)
+
+    # Limpia la interfaz cuando el usuario pulsa en purgar desde la vista de inicio
+    def _al_purgar_clips(self) -> None:
+        try:
+            if hasattr(self, "reproductor") and self.reproductor is not None:
+                self.reproductor.detener()
+        except Exception:
+            pass
+
+        self.panel_clips.cargar_clips([])
+        self._actualizar_estadisticas()
+        self.lbl_detalle_titulo.configure(text="Ningún clip seleccionado")
+        self.lbl_detalle_badge.configure(text="Sin clasificar")
+        self.frame_detalle_badge.configure(fg_color="#424242")
+        self.lbl_detalle_metricas.configure(text="Score Algorítmico: --  |  Estimación: Audio (50%) + Chat (50%)")
+
+    # Carga directamente los clips existentes en disco sin necesidad de descargar
+    def _ir_a_clips_existentes(self) -> None:
+        clips = PanelListaClips.escanear_directorio_candidatos(self.carpeta_candidatos)
+        if clips:
+            self.mostrar_vista_validacion(clips)
         else:
-            self.lbl_estado.configure(
-                text=f"No se encontraron clips en: '{self.carpeta_candidatos.resolve()}'"
+            self.vista_inicio.mostrar_error(
+                f"No se encontraron clips en '{self.carpeta_candidatos.name}'. Pega una URL para procesar."
             )
 
-    # Se ejecuta cuando el usuario hace clic en una tarjeta de la lista
+    # Lanza el pipeline completo en un hilo secundario sin congelar la ventana
+    def _ejecutar_pipeline_fondo(self, url: str) -> None:
+        if self._ejecutando_pipeline:
+            return
+
+        # NUNCA se borran clips automáticamente; la persistencia está asegurada
+        self._ejecutando_pipeline = True
+        self.vista_inicio.establecer_modo_procesando(True)
+
+        def tarea_hilo():
+            try:
+                if PipelineClips is None:
+                    raise ImportError("No se pudo cargar el módulo orquestador 'PipelineClips'.")
+
+                pipeline = PipelineClips(carpeta_base=self.carpeta_base)
+
+                def callback_progreso(mensaje: str, porcentaje: float):
+                    def actualizar():
+                        self.vista_inicio.actualizar_progreso(mensaje, porcentaje)
+                    try:
+                        self.after(0, actualizar)
+                    except Exception:
+                        pass
+
+                clips_obtenidos = pipeline.ejecutar(
+                    url_vod=url,
+                    callback_progreso=callback_progreso
+                )
+
+                def exito():
+                    self._ejecutando_pipeline = False
+                    self.vista_inicio.establecer_modo_procesando(False)
+                    self.mostrar_vista_validacion(clips_obtenidos)
+
+                try:
+                    self.after(0, exito)
+                except Exception:
+                    pass
+
+            except Exception as error:
+                def fallo(err=str(error)):
+                    self._ejecutando_pipeline = False
+                    self.vista_inicio.establecer_modo_procesando(False)
+                    self.vista_inicio.mostrar_error(err)
+
+                try:
+                    self.after(0, fallo)
+                except Exception:
+                    pass
+
+        hilo = threading.Thread(target=tarea_hilo, daemon=True)
+        hilo.start()
+
+    # Evento al seleccionar un clip en la lista de la vista de validación
     def _on_clip_seleccionado(self, clip: CandidatoClip) -> None:
         if clip.ruta_video and clip.ruta_video.exists():
             self.reproductor.cargar_video(clip.ruta_video)
         else:
-            print(f"[Aviso] El clip no tiene archivo físico en disco: {clip}")
+            print(f"[Aviso] El archivo no existe en disco: {clip.ruta_video}")
 
         self._actualizar_panel_detalles(clip)
 
-    # Actualiza los textos y distintivos del panel de detalles inferior
+    # Actualiza los textos y badges del panel inferior de detalles
     def _actualizar_panel_detalles(self, clip: CandidatoClip) -> None:
         duracion = clip.segundo_fin - clip.segundo_inicio
         nombre = clip.ruta_video.name if clip.ruta_video else "Clip"
@@ -219,18 +433,18 @@ class AppValidacionClips(ctk.CTk):
             text=f"Score Algorítmico: {clip.puntuacion:.2f}  |  Estimación: Audio (50%) + Chat (50%)"
         )
 
-    # Lanza la inferencia de CLIP en un hilo secundario para no bloquear la interfaz
+    # Lanza la inferencia de CLIP bajo demanda en la vista de validación
     def _iniciar_analisis_ia(self) -> None:
         if self._analizando_ia:
             return
 
         if not self.panel_clips.clips:
-            self.lbl_estado.configure(text="No hay clips candidatos cargados para analizar.")
+            self.lbl_estado.configure(text="No hay clips para analizar.")
             return
 
         self._analizando_ia = True
         self.panel_clips.establecer_estado_analisis(True, "Cargando modelo CLIP...", 0.05)
-        self.lbl_estado.configure(text="Ejecutando clasificación visual con IA (OpenAI CLIP)...")
+        self.lbl_estado.configure(text="Analizando clips con OpenAI CLIP...")
 
         def tarea_fondo():
             try:
@@ -269,7 +483,7 @@ class AppValidacionClips(ctk.CTk):
                         1.0
                     )
                     self.lbl_estado.configure(
-                        text=f"Análisis visual completado con éxito ({len(clips_clasificados)} clips clasificados)"
+                        text=f"Análisis visual completado ({len(clips_clasificados)} clips clasificados)"
                     )
                     if self.panel_clips._indice_seleccionado is not None:
                         idx = self.panel_clips._indice_seleccionado
@@ -295,19 +509,21 @@ class AppValidacionClips(ctk.CTk):
         hilo = threading.Thread(target=tarea_fondo, daemon=True)
         hilo.start()
 
-    # Consulta al panel de clips el recuento actual y actualiza el texto inferior
+    # Actualiza el conteo de clips aprobados y descartados en la barra inferior
     def _actualizar_estadisticas(self) -> None:
         total, aprobados, descartados = self.panel_clips.obtener_conteo_estados()
         self.lbl_estado.configure(
             text=f"Total: {total}  |  Aprobados: {aprobados}  |  Descartados: {descartados}"
         )
 
-    # Guarda en un archivo JSON los datos de los clips que quedaron en estado 'Aprobado'
-    def _exportar_seleccion(self) -> None:
+    # Guarda los clips aprobados en un archivo JSON estructurado
+    def _exportar_seleccion(self) -> Path | None:
         aprobados = self.panel_clips.obtener_clips_aprobados()
+        if not aprobados:
+            self.lbl_estado.configure(text="⚠️ No hay clips con estado 'Aprobado' para exportar.")
+            return None
 
-        carpeta_exportacion = self.carpeta_candidatos.parent
-        ruta_salida = carpeta_exportacion / "clips_aprobados.json"
+        ruta_salida = self.carpeta_base / "clips_aprobados.json"
 
         datos = []
         for c in aprobados:
@@ -326,21 +542,105 @@ class AppValidacionClips(ctk.CTk):
 
         print(f"Exportados {len(aprobados)} clips a: {ruta_salida.resolve()}")
         self.lbl_estado.configure(
-            text=f"¡Exportados {len(aprobados)} clips aprobados en: {ruta_salida.name}!"
+            text=f"¡Guardados {len(aprobados)} clips aprobados en '{ruta_salida.name}'!"
+        )
+        return ruta_salida
+
+    # Ejecuta en segundo plano la Fase 5: reencuadre vertical con FFmpeg
+    def _renderizar_verticales(self) -> None:
+        if self._renderizando_vertical:
+            return
+
+        aprobados = self.panel_clips.obtener_clips_aprobados()
+        if not aprobados:
+            self.lbl_estado.configure(
+                text="⚠️ Debes marcar al menos un clip como 'Aprobado' para renderizarlo."
+            )
+            return
+
+        # Guardamos primero el JSON actualizado
+        ruta_json = self._exportar_seleccion()
+        if ruta_json is None:
+            return
+
+        self._renderizando_vertical = True
+        self.btn_render_vertical.configure(state="disabled", text="⏳ Renderizando...")
+        self.lbl_estado.configure(
+            text=f"Iniciando renderizado vertical 9:16 de {len(aprobados)} clips..."
         )
 
-    # Se ejecuta al pulsar la 'X' de la ventana para detener VLC antes de salir
+        def tarea_fondo():
+            try:
+                if RenderizadorVertical is None:
+                    raise ImportError("Módulo RenderizadorVertical no disponible.")
+
+                renderizador = RenderizadorVertical(
+                    carpeta_salida=self.carpeta_verticales,
+                    preset="veryfast"
+                )
+
+                def callback_progreso_render(actual: int, total: int, ruta_resultado: Path):
+                    def en_ui():
+                        self.lbl_estado.configure(
+                            text=f"🎬 Renderizando [{actual}/{total}]: {ruta_resultado.name}..."
+                        )
+                    try:
+                        self.after(0, en_ui)
+                    except Exception:
+                        pass
+
+                videos_generados = renderizador.procesar_clips_aprobados(
+                    ruta_json=ruta_json,
+                    callback_progreso=callback_progreso_render
+                )
+
+                def al_terminar():
+                    self._renderizando_vertical = False
+                    self.btn_render_vertical.configure(
+                        state="normal",
+                        text="🎬  Renderizar Vertical (9:16)"
+                    )
+                    self.lbl_estado.configure(
+                        text=f"¡Renderizado completado con éxito! ({len(videos_generados)} clips generados)"
+                    )
+                    # Mostramos la ventana emergente con acceso directo a la carpeta
+                    VentanaExitoRender(self, len(videos_generados), self.carpeta_verticales)
+
+                try:
+                    self.after(0, al_terminar)
+                except Exception:
+                    pass
+
+            except Exception as error:
+                def al_fallar(err=str(error)):
+                    self._renderizando_vertical = False
+                    self.btn_render_vertical.configure(
+                        state="normal",
+                        text="🎬  Renderizar Vertical (9:16)"
+                    )
+                    self.lbl_estado.configure(text=f"Error en renderizado: {err}")
+
+                try:
+                    self.after(0, al_fallar)
+                except Exception:
+                    pass
+
+        hilo = threading.Thread(target=tarea_fondo, daemon=True)
+        hilo.start()
+
+    # Cierre controlado al pulsar la 'X' de la ventana
     def _al_cerrar(self) -> None:
         try:
-            self.reproductor.liberar_recursos()
+            if hasattr(self, "reproductor") and self.reproductor is not None:
+                self.reproductor.liberar_recursos()
         except Exception:
             pass
         self.destroy()
 
 
-# Función de entrada para lanzar la interfaz gráfica
+# Punto de entrada para ejecutar la interfaz
 def iniciar_aplicacion() -> None:
-    app = AppValidacionClips()
+    app = AppPrendeClips()
     app.mainloop()
 
 

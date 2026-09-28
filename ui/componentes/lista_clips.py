@@ -309,10 +309,6 @@ class PanelListaClips(ctk.CTkFrame):
             )
             elems["opcion_categoria"].set(clip_actualizado.categoria)
 
-        # Si este clip está actualmente seleccionado, avisamos a la ventana principal
-        if self._indice_seleccionado == indice and self.on_clip_seleccionado is not None:
-            self.on_clip_seleccionado(clip_actualizado)
-
     # Permite al usuario modificar la categoría desde el desplegable
     def _on_cambio_categoria_manual(self, indice: int, nueva_categoria: str) -> None:
         if indice < 0 or indice >= len(self.clips):
