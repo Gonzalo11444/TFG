@@ -8,6 +8,7 @@ from pathlib import Path
 from dataclasses import replace
 from typing import Callable
 import os
+import json
 
 #Se desactivan avisos internos de TensorFlow para que no salgan en interfaz
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
@@ -245,6 +246,50 @@ class ClasificadorVisual:
                 callback_progreso(i + 1, total, nuevo_clip)
 
         return clips_actualizados
+
+
+# Vuelca la lista de clips clasificados en el archivo de persistencia clips_info.json
+def guardar_clips_info_json(clips: list[CandidatoClip], ruta_destino: Path | str) -> Path:
+    destino = Path(ruta_destino).resolve()
+    destino.parent.mkdir(parents=True, exist_ok=True)
+
+    datos = []
+    for c in clips:
+        nombre = c.ruta_video.name if c.ruta_video else f"clip_{c.segundo_inicio}s_{c.segundo_fin}s.mp4"
+        datos.append({
+            "nombre_archivo": nombre,
+            "ruta": str(c.ruta_video.resolve()) if c.ruta_video else None,
+            "segundo_inicio": c.segundo_inicio,
+            "segundo_fin": c.segundo_fin,
+            "duracion": c.segundo_fin - c.segundo_inicio,
+            "puntuacion": c.puntuacion,
+            "categoria": c.categoria,
+            "confianza": round(c.confianza_ia, 4),
+            "estado": "Aprobado" if c.aprobado else "Pendiente"
+        })
+
+    with open(destino, "w", encoding="utf-8") as f:
+        json.dump(datos, f, indent=4, ensure_ascii=False)
+
+    print(f"[ClasificadorCLIP] Guardada persistencia en: {destino}")
+    return destino
+
+
+# Carga la información persistida desde clips_info.json si existe
+def cargar_clips_info_json(ruta_json: Path | str) -> list[dict]:
+    origen = Path(ruta_json).resolve()
+    if not origen.exists():
+        return []
+
+    try:
+        with open(origen, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+        if isinstance(datos, list):
+            return datos
+    except Exception as error:
+        print(f"[ClasificadorCLIP] Error al leer {origen.name}: {error}")
+
+    return []
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 import shutil
 import re
+import json
 
 # Importación flexible de los módulos del proyecto
 try:
@@ -228,8 +229,46 @@ class PipelineClips:
             print(f"[Aviso] Falló la clasificación por IA: {error_ia}. Continuando sin clasificación.")
             clips_finales = clips_descargados
 
+        # Volcado automático de persistencia estructurado en clips_info.json
+        try:
+            self.guardar_clips_info(clips_finales)
+        except Exception as error_guardado:
+            print(f"[Aviso] No se pudo guardar clips_info.json: {error_guardado}")
+
         notificar("¡Pipeline completado con éxito! Cargando clips en la interfaz...", 1.0)
         return clips_finales
+
+    # Vuelca la información de los clips clasificados en clips_info.json para persistencia permanente
+    def guardar_clips_info(
+        self,
+        clips: list[CandidatoClip],
+        ruta_json: Path | str | None = None
+    ) -> Path:
+        if ruta_json is not None:
+            destino = Path(ruta_json)
+        else:
+            destino = self.carpeta_base / "clips_info.json"
+
+        datos = []
+        for c in clips:
+            nombre = c.ruta_video.name if c.ruta_video else f"clip_{c.segundo_inicio}s_{c.segundo_fin}s.mp4"
+            datos.append({
+                "nombre_archivo": nombre,
+                "ruta": str(c.ruta_video.resolve()) if c.ruta_video else None,
+                "segundo_inicio": c.segundo_inicio,
+                "segundo_fin": c.segundo_fin,
+                "duracion": c.segundo_fin - c.segundo_inicio,
+                "puntuacion": c.puntuacion,
+                "categoria": c.categoria,
+                "confianza": round(c.confianza_ia, 4),
+                "estado": "Aprobado" if c.aprobado else "Pendiente"
+            })
+
+        with open(destino, "w", encoding="utf-8") as f:
+            json.dump(datos, f, indent=4, ensure_ascii=False)
+
+        print(f"[Pipeline] Guardada información y clasificación de clips en: {destino}")
+        return destino
 
 
 if __name__ == "__main__":

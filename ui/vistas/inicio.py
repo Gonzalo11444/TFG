@@ -39,7 +39,7 @@ def purgar_archivos_sesion(carpeta_base: Path | str) -> int:
     if (raiz / "modulos" / "downloads").exists() and (raiz / "modulos" / "downloads").resolve() not in rutas_a_revisar:
         rutas_a_revisar.append((raiz / "modulos" / "downloads").resolve())
 
-    archivos_fijos = ["audio.m4a", "chat.json", "clips_aprobados.json"]
+    archivos_fijos = ["audio.m4a", "chat.json", "clips_info.json", "clips_aprobados.json"]
 
     for cb in rutas_a_revisar:
         # 1. Eliminamos archivos de señales y metadatos no exportados
@@ -69,12 +69,12 @@ def purgar_archivos_sesion(carpeta_base: Path | str) -> int:
 
 
 class DialogoConfirmarPurga(ctk.CTkToplevel):
-    # Ventana modal de confirmación estética para purgar archivos de sesión
+    # Ventana modal de confirmación estética para borrar clips anteriores
     def __init__(self, master, on_confirmar: Callable[[], None]):
         super().__init__(master)
         self.on_confirmar = on_confirmar
 
-        self.title("Confirmar Purga de Sesión")
+        self.title("Confirmar Borrado de Clips Anteriores")
         self.geometry("450x250")
         self.resizable(False, False)
         self.attributes("-topmost", True)
@@ -87,7 +87,7 @@ class DialogoConfirmarPurga(ctk.CTkToplevel):
 
         lbl_titulo = ctk.CTkLabel(
             self,
-            text="¿Purgar clips de la sesión actual?",
+            text="¿Borrar clips anteriores?",
             font=("Arial", 15, "bold")
         )
         lbl_titulo.pack(pady=(0, 6))
@@ -106,7 +106,7 @@ class DialogoConfirmarPurga(ctk.CTkToplevel):
 
         btn_eliminar = ctk.CTkButton(
             frame_botones,
-            text="🗑️ Sí, purgar sesión",
+            text="🗑️ Sí, borrar clips anteriores",
             font=("Arial", 11, "bold"),
             fg_color="#c62828",
             hover_color="#b71c1c",
@@ -293,7 +293,7 @@ class VistaInicio(ctk.CTkFrame):
 
         self.btn_purgar_clips = ctk.CTkButton(
             frame_utilidades,
-            text="🗑️ Purgar clips de la sesión",
+            text="🗑️ Borrar clips anteriores",
             font=("Arial", 11),
             height=32,
             fg_color="#37474f",
@@ -358,25 +358,27 @@ class VistaInicio(ctk.CTkFrame):
         if self.on_cargar_existentes is not None:
             self.on_cargar_existentes()
 
-    # Muestra el diálogo modal para confirmar la purga
+    # Muestra el diálogo modal para confirmar el borrado de clips anteriores
     def _al_pulsar_purgar(self) -> None:
         if self._procesando:
             return
 
         DialogoConfirmarPurga(self, on_confirmar=self._ejecutar_purga)
 
-    # Ejecuta el borrado de archivos temporales
+    # Ejecuta el borrado de archivos temporales de clips anteriores
     def _ejecutar_purga(self) -> None:
         eliminados = purgar_archivos_sesion(self.carpeta_salida)
         self.lbl_estado.configure(
-            text=f"🗑️ Se han eliminado {eliminados} archivos temporales de la sesión (conservando 'clips_verticales/').",
+            text=f"🗑️ Se han borrado {eliminados} archivos de clips anteriores (conservando 'clips_verticales/').",
             text_color="#81c784"
         )
         if self.on_purgar_completado is not None:
             self.on_purgar_completado()
 
-    # Abre la carpeta de descargas en el explorador de Windows
+    # Abre la carpeta de descargas en el explorador de Windows si no hay proceso activo
     def _abrir_carpeta(self) -> None:
+        if self._procesando:
+            return
         abrir_carpeta_sistema(self.carpeta_salida)
 
     # Devuelve el texto actualmente escrito en el campo de URL
@@ -389,6 +391,7 @@ class VistaInicio(ctk.CTkFrame):
         if activo:
             self.entry_url.configure(state="disabled")
             self.btn_procesar.configure(state="disabled", text="⏳ Procesando en segundo plano...")
+            self.btn_abrir_carpeta.configure(state="disabled")
             self.btn_ver_existentes.configure(state="disabled")
             self.btn_purgar_clips.configure(state="disabled")
             self.barra_progreso.configure(mode="indeterminate")
@@ -400,6 +403,7 @@ class VistaInicio(ctk.CTkFrame):
         else:
             self.entry_url.configure(state="normal")
             self.btn_procesar.configure(state="normal", text="🚀  Procesar y Extraer Clips")
+            self.btn_abrir_carpeta.configure(state="normal")
             self.btn_ver_existentes.configure(state="normal")
             self.btn_purgar_clips.configure(state="normal")
             self.barra_progreso.stop()

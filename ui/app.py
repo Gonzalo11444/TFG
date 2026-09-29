@@ -8,6 +8,7 @@ el panel de detalles de inspección enriquecida y el clasificador visual CLIP.
 
 from pathlib import Path
 from typing import Callable
+from tkinter import messagebox
 import json
 import sys
 import threading
@@ -131,6 +132,7 @@ class AppPrendeClips(ctk.CTk):
 
         # Variables de control de estado de hilos
         self._ejecutando_pipeline = False
+        self._hilo_pipeline: threading.Thread | None = None
         self._analizando_ia = False
         self._renderizando_vertical = False
 
@@ -190,7 +192,8 @@ class AppPrendeClips(ctk.CTk):
             width=380,
             on_clip_seleccionado=self._on_clip_seleccionado,
             on_estado_cambiado=self._actualizar_estadisticas,
-            on_lanzar_ia=self._iniciar_analisis_ia
+            on_lanzar_ia=self._iniciar_analisis_ia,
+            on_clips_actualizados=self._guardar_persistencia_clips_info
         )
         self.panel_clips.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(10, 5), pady=(10, 5))
 
@@ -293,10 +296,35 @@ class AppPrendeClips(ctk.CTk):
 
     # Cambia la visualización a la vista de bienvenida y libera descriptores de archivo
     def mostrar_vista_inicio(self) -> None:
-        # Detenemos obligatoriamente la reproducción de VLC antes de ocultar la vista
-        # para liberar el HWND y los descriptores del archivo en Windows
+        # Si el pipeline o procesos pesados están en ejecución en segundo plano, mostramos diálogo de alerta
+        if self._hilo_pipeline is not None and self._hilo_pipeline.is_alive():
+            messagebox.showwarning(
+                "Análisis en curso",
+                "Hay un proceso de descarga o análisis en curso en segundo plano. Espera a que finalice para evitar estados inconsistentes."
+            )
+            return
+
+        if self._analizando_ia:
+            messagebox.showwarning(
+                "Clasificación IA en curso",
+                "Se están analizando los clips con OpenAI CLIP. Espera a que finalice la inferencia antes de salir."
+            )
+            return
+
+        if self._renderizando_vertical:
+            messagebox.showwarning(
+                "Renderizado en curso",
+                "Hay un renderizado vertical en segundo plano. Espera a que termine antes de volver al inicio."
+            )
+            return
+
+        # c) En la transición de salida (al pulsar volver atrás o salir), forzar obligatoriamente
+        # self.reproductor.player.stop() y desvincular el medio antes de desmontar o cambiar el Frame
         try:
             if hasattr(self, "reproductor") and self.reproductor is not None:
+                if hasattr(self.reproductor, "player") and self.reproductor.player is not None:
+                    self.reproductor.player.stop()
+                    self.reproductor.player.set_media(None)
                 self.reproductor.detener()
         except Exception as e:
             print(f"[App] Aviso al detener reproductor: {e}")
@@ -305,44 +333,81 @@ class AppPrendeClips(ctk.CTk):
         self.vista_inicio.pack(fill="both", expand=True)
         self.update_idletasks()
 
+    # Bloquea o desbloquea los controles de navegación y acciones durante tareas pesadas
+    def _bloquear_navegacion_validacion(self, bloqueado: bool) -> None:
+        estado = "disabled" if bloqueado else "normal"
+
+        if hasattr(self, "btn_volver_inicio"):
+            self.btn_volver_inicio.configure(state=estado)
+        if hasattr(self, "btn_exportar_json"):
+            self.btn_exportar_json.configure(state=estado)
+        if hasattr(self, "btn_render_vertical"):
+            if not bloqueado:
+                self.btn_render_vertical.configure(state="normal", text="🎬  Renderizar Vertical (9:16)")
+            else:
+                self.btn_render_vertical.configure(state="disabled")
+        if hasattr(self, "panel_clips"):
+            if hasattr(self.panel_clips, "btn_analizar_ia"):
+                if not bloqueado:
+                    self.panel_clips.btn_analizar_ia.configure(state="normal", text="✨ Analizar con IA")
+                else:
+                    self.panel_clips.btn_analizar_ia.configure(state="disabled")
+            self.panel_clips.establecer_bloqueo_interaccion(bloqueado)
+
     # Cambia la visualización a la vista de validación asegurando el mapeo del HWND de VLC
     def mostrar_vista_validacion(self, clips: list[CandidatoClip] | None = None) -> None:
         self.vista_inicio.pack_forget()
         self.frame_validacion.pack(fill="both", expand=True)
 
-        # Forzamos primero update_idletasks para que Tkinter y Windows mapeen los frames
+        # a) Al mostrar la vista de validación, invocar primero self.update_idletasks()
         self.update_idletasks()
 
-        if clips:
+        if clips is not None:
             self.panel_clips.cargar_clips(clips)
             self._actualizar_estadisticas()
-            # Retrasamos la selección y vinculación del HWND 150 ms usando self.after(150, ...)
+        elif not self.panel_clips.clips or len(self.panel_clips.clips) == 0:
+            self.panel_clips.cargar_clips_desde_directorio(self.carpeta_candidatos)
+            self._actualizar_estadisticas()
+
+        # b) Si hay clips disponibles, postergar la vinculación del HWND de VLC y la carga del primer clip unos 150 ms
+        if self.panel_clips.clips and len(self.panel_clips.clips) > 0:
             self.after(150, self._seleccionar_primer_clip_seguro)
+        else:
+            self._limpiar_detalles_sin_clip()
 
     # Selecciona el primer clip de la lista de forma segura si existen elementos
     def _seleccionar_primer_clip_seguro(self) -> None:
-        if self.panel_clips.clips:
-            self.panel_clips.seleccionar_clip(0)
+        if self.panel_clips.clips and len(self.panel_clips.clips) > 0:
+            self.panel_clips.seleccionar_clip(0, reproducir=True)
+        else:
+            self._limpiar_detalles_sin_clip()
 
-    # Limpia la interfaz cuando el usuario pulsa en purgar desde la vista de inicio
-    def _al_purgar_clips(self) -> None:
+    # Limpia el panel de detalles y el reproductor cuando no hay clips cargados
+    def _limpiar_detalles_sin_clip(self) -> None:
         try:
             if hasattr(self, "reproductor") and self.reproductor is not None:
                 self.reproductor.detener()
         except Exception:
             pass
 
+        self.lbl_detalle_titulo.configure(text="No hay clips disponibles")
+        self.frame_detalle_badge.configure(fg_color="#424242")
+        self.lbl_detalle_badge.configure(text="Sin clips")
+        self.lbl_detalle_metricas.configure(text="No hay clips candidatos cargados.")
+
+    # Limpia la interfaz cuando el usuario pulsa en purgar desde la vista de inicio
+    def _al_purgar_clips(self) -> None:
         self.panel_clips.cargar_clips([])
         self._actualizar_estadisticas()
-        self.lbl_detalle_titulo.configure(text="Ningún clip seleccionado")
-        self.lbl_detalle_badge.configure(text="Sin clasificar")
-        self.frame_detalle_badge.configure(fg_color="#424242")
-        self.lbl_detalle_metricas.configure(text="Score Algorítmico: --  |  Estimación: Audio (50%) + Chat (50%)")
+        self._limpiar_detalles_sin_clip()
 
     # Carga directamente los clips existentes en disco sin necesidad de descargar
     def _ir_a_clips_existentes(self) -> None:
-        clips = PanelListaClips.escanear_directorio_candidatos(self.carpeta_candidatos)
-        if clips:
+        if self._ejecutando_pipeline or (self._hilo_pipeline and self._hilo_pipeline.is_alive()):
+            return
+
+        clips = self.panel_clips.cargar_clips_desde_directorio(self.carpeta_candidatos)
+        if clips and len(clips) > 0:
             self.mostrar_vista_validacion(clips)
         else:
             self.vista_inicio.mostrar_error(
@@ -380,6 +445,7 @@ class AppPrendeClips(ctk.CTk):
 
                 def exito():
                     self._ejecutando_pipeline = False
+                    self._hilo_pipeline = None
                     self.vista_inicio.establecer_modo_procesando(False)
                     self.mostrar_vista_validacion(clips_obtenidos)
 
@@ -391,6 +457,7 @@ class AppPrendeClips(ctk.CTk):
             except Exception as error:
                 def fallo(err=str(error)):
                     self._ejecutando_pipeline = False
+                    self._hilo_pipeline = None
                     self.vista_inicio.establecer_modo_procesando(False)
                     self.vista_inicio.mostrar_error(err)
 
@@ -399,20 +466,29 @@ class AppPrendeClips(ctk.CTk):
                 except Exception:
                     pass
 
-        hilo = threading.Thread(target=tarea_hilo, daemon=True)
-        hilo.start()
+        self._hilo_pipeline = threading.Thread(target=tarea_hilo, daemon=True)
+        self._hilo_pipeline.start()
 
     # Evento al seleccionar un clip en la lista de la vista de validación
-    def _on_clip_seleccionado(self, clip: CandidatoClip) -> None:
+    def _on_clip_seleccionado(self, clip: CandidatoClip | None) -> None:
+        if clip is None:
+            self._limpiar_detalles_sin_clip()
+            return
+
         if clip.ruta_video and clip.ruta_video.exists():
             self.reproductor.cargar_video(clip.ruta_video)
         else:
             print(f"[Aviso] El archivo no existe en disco: {clip.ruta_video}")
+            self.reproductor.detener()
 
         self._actualizar_panel_detalles(clip)
 
     # Actualiza los textos y badges del panel inferior de detalles
-    def _actualizar_panel_detalles(self, clip: CandidatoClip) -> None:
+    def _actualizar_panel_detalles(self, clip: CandidatoClip | None) -> None:
+        if clip is None:
+            self._limpiar_detalles_sin_clip()
+            return
+
         duracion = clip.segundo_fin - clip.segundo_inicio
         nombre = clip.ruta_video.name if clip.ruta_video else "Clip"
         self.lbl_detalle_titulo.configure(
@@ -435,14 +511,15 @@ class AppPrendeClips(ctk.CTk):
 
     # Lanza la inferencia de CLIP bajo demanda en la vista de validación
     def _iniciar_analisis_ia(self) -> None:
-        if self._analizando_ia:
+        if self._analizando_ia or self._renderizando_vertical:
             return
 
-        if not self.panel_clips.clips:
+        if not self.panel_clips.clips or len(self.panel_clips.clips) == 0:
             self.lbl_estado.configure(text="No hay clips para analizar.")
             return
 
         self._analizando_ia = True
+        self._bloquear_navegacion_validacion(True)
         self.panel_clips.establecer_estado_analisis(True, "Cargando modelo CLIP...", 0.05)
         self.lbl_estado.configure(text="Analizando clips con OpenAI CLIP...")
 
@@ -452,7 +529,8 @@ class AppPrendeClips(ctk.CTk):
                     raise ImportError("Módulo ClasificadorVisual no disponible.")
 
                 clasificador = ClasificadorVisual()
-                total = len(self.panel_clips.clips)
+                clips_a_clasificar = list(self.panel_clips.clips)
+                total = len(clips_a_clasificar)
 
                 def callback_progreso(actual: int, total_clips: int, clip_actualizado: CandidatoClip):
                     progreso = actual / total_clips
@@ -471,12 +549,13 @@ class AppPrendeClips(ctk.CTk):
                         pass
 
                 clips_clasificados = clasificador.clasificar_candidatos(
-                    self.panel_clips.clips,
+                    clips_a_clasificar,
                     callback_progreso=callback_progreso
                 )
 
                 def al_terminar():
                     self._analizando_ia = False
+                    self._bloquear_navegacion_validacion(False)
                     self.panel_clips.establecer_estado_analisis(
                         False,
                         f"¡Clasificación completada! ({len(clips_clasificados)} clips)",
@@ -487,8 +566,10 @@ class AppPrendeClips(ctk.CTk):
                     )
                     if self.panel_clips._indice_seleccionado is not None:
                         idx = self.panel_clips._indice_seleccionado
-                        if idx < len(self.panel_clips.clips):
+                        if self.panel_clips.clips and 0 <= idx < len(self.panel_clips.clips):
                             self._actualizar_panel_detalles(self.panel_clips.clips[idx])
+                    # Guardamos la persistencia en clips_info.json tras la inferencia de CLIP
+                    self._guardar_persistencia_clips_info()
 
                 try:
                     self.after(0, al_terminar)
@@ -498,6 +579,7 @@ class AppPrendeClips(ctk.CTk):
             except Exception as error:
                 def al_fallar(err=error):
                     self._analizando_ia = False
+                    self._bloquear_navegacion_validacion(False)
                     self.panel_clips.establecer_estado_analisis(False, f"Error: {err}", 0.0)
                     self.lbl_estado.configure(text=f"Error en análisis IA: {err}")
 
@@ -516,12 +598,65 @@ class AppPrendeClips(ctk.CTk):
             text=f"Total: {total}  |  Aprobados: {aprobados}  |  Descartados: {descartados}"
         )
 
+    # Vuelca el estado y etiquetas actuales de todos los clips en clips_info.json para persistencia permanente
+    def _guardar_persistencia_clips_info(self) -> Path | None:
+        if not hasattr(self, "panel_clips") or not self.panel_clips.clips:
+            return None
+
+        ruta_json = self.carpeta_base / "clips_info.json"
+        datos = []
+        for i, clip in enumerate(self.panel_clips.clips):
+            nombre = clip.ruta_video.name if clip.ruta_video else f"clip_{clip.segundo_inicio}s_{clip.segundo_fin}s.mp4"
+            estado = self.panel_clips.estados.get(i, "Aprobado" if clip.aprobado else "Pendiente")
+            datos.append({
+                "nombre_archivo": nombre,
+                "ruta": str(clip.ruta_video.resolve()) if clip.ruta_video else None,
+                "segundo_inicio": clip.segundo_inicio,
+                "segundo_fin": clip.segundo_fin,
+                "duracion": clip.segundo_fin - clip.segundo_inicio,
+                "puntuacion": clip.puntuacion,
+                "categoria": clip.categoria,
+                "confianza": round(clip.confianza_ia, 4),
+                "estado": estado
+            })
+
+        try:
+            ruta_json.parent.mkdir(parents=True, exist_ok=True)
+            with open(ruta_json, "w", encoding="utf-8") as f:
+                json.dump(datos, f, indent=4, ensure_ascii=False)
+            print(f"[App] Persistencia actualizada en: {ruta_json.resolve()}")
+
+            # Si la carpeta base es modulos/downloads, reflejar también en downloads/ en la raíz si procede
+            raiz_downloads = directorio_raiz / "downloads" / "clips_info.json"
+            if ruta_json.resolve() != raiz_downloads.resolve():
+                try:
+                    raiz_downloads.parent.mkdir(parents=True, exist_ok=True)
+                    with open(raiz_downloads, "w", encoding="utf-8") as f_raiz:
+                        json.dump(datos, f_raiz, indent=4, ensure_ascii=False)
+                except Exception:
+                    pass
+
+            return ruta_json
+        except Exception as error:
+            print(f"[App] Error al guardar persistencia en {ruta_json}: {error}")
+            return None
+
     # Guarda los clips aprobados en un archivo JSON estructurado
     def _exportar_seleccion(self) -> Path | None:
-        aprobados = self.panel_clips.obtener_clips_aprobados()
-        if not aprobados:
+        if self._analizando_ia or self._renderizando_vertical:
+            return None
+
+        if not self.panel_clips.clips or len(self.panel_clips.clips) == 0:
             self.lbl_estado.configure(text="⚠️ No hay clips con estado 'Aprobado' para exportar.")
             return None
+
+        aprobados = self.panel_clips.obtener_clips_aprobados()
+        if not aprobados or len(aprobados) == 0:
+            self.lbl_estado.configure(text="⚠️ No hay clips con estado 'Aprobado' para exportar.")
+            return None
+
+        # Actualizamos también la persistencia general de la sesión
+        self._guardar_persistencia_clips_info()
 
         ruta_salida = self.carpeta_base / "clips_aprobados.json"
 
@@ -548,11 +683,17 @@ class AppPrendeClips(ctk.CTk):
 
     # Ejecuta en segundo plano la Fase 5: reencuadre vertical con FFmpeg
     def _renderizar_verticales(self) -> None:
-        if self._renderizando_vertical:
+        if self._renderizando_vertical or self._analizando_ia:
+            return
+
+        if not self.panel_clips.clips or len(self.panel_clips.clips) == 0:
+            self.lbl_estado.configure(
+                text="⚠️ No hay clips cargados para renderizar."
+            )
             return
 
         aprobados = self.panel_clips.obtener_clips_aprobados()
-        if not aprobados:
+        if not aprobados or len(aprobados) == 0:
             self.lbl_estado.configure(
                 text="⚠️ Debes marcar al menos un clip como 'Aprobado' para renderizarlo."
             )
@@ -564,6 +705,7 @@ class AppPrendeClips(ctk.CTk):
             return
 
         self._renderizando_vertical = True
+        self._bloquear_navegacion_validacion(True)
         self.btn_render_vertical.configure(state="disabled", text="⏳ Renderizando...")
         self.lbl_estado.configure(
             text=f"Iniciando renderizado vertical 9:16 de {len(aprobados)} clips..."
@@ -596,10 +738,7 @@ class AppPrendeClips(ctk.CTk):
 
                 def al_terminar():
                     self._renderizando_vertical = False
-                    self.btn_render_vertical.configure(
-                        state="normal",
-                        text="🎬  Renderizar Vertical (9:16)"
-                    )
+                    self._bloquear_navegacion_validacion(False)
                     self.lbl_estado.configure(
                         text=f"¡Renderizado completado con éxito! ({len(videos_generados)} clips generados)"
                     )
@@ -614,10 +753,7 @@ class AppPrendeClips(ctk.CTk):
             except Exception as error:
                 def al_fallar(err=str(error)):
                     self._renderizando_vertical = False
-                    self.btn_render_vertical.configure(
-                        state="normal",
-                        text="🎬  Renderizar Vertical (9:16)"
-                    )
+                    self._bloquear_navegacion_validacion(False)
                     self.lbl_estado.configure(text=f"Error en renderizado: {err}")
 
                 try:
@@ -632,6 +768,9 @@ class AppPrendeClips(ctk.CTk):
     def _al_cerrar(self) -> None:
         try:
             if hasattr(self, "reproductor") and self.reproductor is not None:
+                if hasattr(self.reproductor, "player") and self.reproductor.player is not None:
+                    self.reproductor.player.stop()
+                    self.reproductor.player.set_media(None)
                 self.reproductor.liberar_recursos()
         except Exception:
             pass

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 from dataclasses import replace
 import re
+import json
 import customtkinter as ctk
 
 # Intento de importación del modelo de datos de la Fase 3
@@ -58,6 +59,7 @@ class PanelListaClips(ctk.CTkFrame):
         on_clip_seleccionado: Callable[[CandidatoClip], None] | None = None,
         on_estado_cambiado: Callable[[], None] | None = None,
         on_lanzar_ia: Callable[[], None] | None = None,
+        on_clips_actualizados: Callable[[], None] | None = None,
         **kwargs
     ):
         super().__init__(master, **kwargs)
@@ -65,12 +67,14 @@ class PanelListaClips(ctk.CTkFrame):
         self.on_clip_seleccionado = on_clip_seleccionado
         self.on_estado_cambiado = on_estado_cambiado
         self.on_lanzar_ia = on_lanzar_ia
+        self.on_clips_actualizados = on_clips_actualizados
 
         self.clips: list[CandidatoClip] = []
         self.estados: dict[int, str] = {}
         self._tarjetas_widgets: list[ctk.CTkFrame] = []
         self._elementos_tarjetas: list[dict] = []
         self._indice_seleccionado: int | None = None
+        self.navegacion_bloqueada: bool = False
 
         # Rejilla del panel principal
         self.grid_rowconfigure(1, weight=1)
@@ -126,30 +130,32 @@ class PanelListaClips(ctk.CTkFrame):
         self.lbl_estado_ia.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 6))
 
     # Carga la lista de clips y crea las tarjetas visuales
-    def cargar_clips(self, clips: list[CandidatoClip]) -> None:
+    def cargar_clips(self, clips: list[CandidatoClip] | None) -> None:
         self.limpiar()
-        self.clips = list(clips)
+        self.clips = [c for c in clips if c is not None] if clips else []
 
-        # Por defecto, todos los candidatos empiezan marcados como 'Aprobado'
-        for i in range(len(self.clips)):
-            self.estados[i] = "Aprobado"
-
-        if not self.clips:
+        if not self.clips or len(self.clips) == 0:
             lbl_vacio = ctk.CTkLabel(
                 self.scroll_tarjetas,
                 text="No hay clips candidatos disponibles.",
+                font=("Arial", 12),
                 text_color="gray"
             )
-            lbl_vacio.grid(row=0, column=0, pady=20)
+            lbl_vacio.grid(row=0, column=0, pady=30, padx=20)
             return
+
+        # Inicializamos los estados respetando la aprobación persistida si existe
+        for i in range(len(self.clips)):
+            self.estados[i] = "Aprobado" if self.clips[i].aprobado else "Descartado"
 
         # Creamos una tarjeta visual para cada clip
         for i in range(len(self.clips)):
             clip = self.clips[i]
             self._crear_tarjeta(i, clip)
 
-        # Seleccionamos el primer clip por defecto para que se cargue en el reproductor
-        self.seleccionar_clip(0)
+        # Destacamos visualmente la primera tarjeta sin disparar reproducción inmediata
+        if self.clips and len(self.clips) > 0:
+            self.seleccionar_clip(0, reproducir=False)
 
     # Borra todas las tarjetas actuales del panel
     def limpiar(self) -> None:
@@ -296,6 +302,8 @@ class PanelListaClips(ctk.CTkFrame):
 
     # Actualiza visualmente el badge y menú cuando se analiza un clip con IA
     def actualizar_clip_ia(self, indice: int, clip_actualizado: CandidatoClip) -> None:
+        if not self.clips or len(self.clips) == 0:
+            return
         if indice < 0 or indice >= len(self.clips):
             return
 
@@ -311,13 +319,17 @@ class PanelListaClips(ctk.CTkFrame):
 
     # Permite al usuario modificar la categoría desde el desplegable
     def _on_cambio_categoria_manual(self, indice: int, nueva_categoria: str) -> None:
-        if indice < 0 or indice >= len(self.clips):
+        if self.navegacion_bloqueada:
+            return
+        if not self.clips or len(self.clips) == 0 or indice < 0 or indice >= len(self.clips):
             return
 
         clip_actual = self.clips[indice]
         # Creamos una nueva instancia con la categoría corregida manualmente (confianza 1.0)
         clip_modificado = replace(clip_actual, categoria=nueva_categoria, confianza_ia=1.0)
         self.actualizar_clip_ia(indice, clip_modificado)
+        if self.on_clips_actualizados is not None:
+            self.on_clips_actualizados()
 
     # Actualiza la barra de progreso y estado del análisis de IA
     def establecer_estado_analisis(self, analizando: bool, texto: str = "", progreso: float = 0.0) -> None:
@@ -330,13 +342,26 @@ class PanelListaClips(ctk.CTkFrame):
             self.lbl_estado_ia.configure(text=texto)
         self.barra_progreso_ia.set(max(0.0, min(1.0, progreso)))
 
+    # Bloquea o desbloquea la interacción durante procesos pesados
+    def establecer_bloqueo_interaccion(self, bloqueado: bool) -> None:
+        self.navegacion_bloqueada = bloqueado
+
     # Ejecuta el callback para lanzar el análisis IA en segundo plano
     def _on_click_analizar_ia(self) -> None:
+        if self.navegacion_bloqueada:
+            return
         if self.on_lanzar_ia is not None:
             self.on_lanzar_ia()
 
-    # Destaca visualmente la tarjeta pulsada y avisa al reproductor
-    def seleccionar_clip(self, indice: int) -> None:
+    # Destaca visualmente la tarjeta pulsada y avisa al reproductor si reproducir es True
+    def seleccionar_clip(self, indice: int, reproducir: bool = True) -> None:
+        if self.navegacion_bloqueada:
+            return
+
+        if not self.clips or len(self.clips) == 0:
+            self._indice_seleccionado = None
+            return
+
         if indice < 0 or indice >= len(self.clips):
             return
 
@@ -351,43 +376,96 @@ class PanelListaClips(ctk.CTkFrame):
                 tarjeta.configure(border_color="#333333", border_width=1, fg_color="#1e1e1e")
 
         # Avisamos a la ventana principal para que cargue el vídeo en VLC
-        clip = self.clips[indice]
-        if self.on_clip_seleccionado is not None:
-            self.on_clip_seleccionado(clip)
+        if self.clips and 0 <= indice < len(self.clips):
+            clip = self.clips[indice]
+            if reproducir and self.on_clip_seleccionado is not None:
+                self.on_clip_seleccionado(clip)
 
     # Actualiza el estado cuando el usuario pulsa Aprobado o Descartado
     def _on_cambio_estado(self, indice: int, nuevo_estado: str) -> None:
+        if self.navegacion_bloqueada:
+            return
         self.estados[indice] = nuevo_estado
+        if self.clips and 0 <= indice < len(self.clips):
+            clip_actual = self.clips[indice]
+            self.clips[indice] = replace(clip_actual, aprobado=(nuevo_estado == "Aprobado"))
         if self.on_estado_cambiado is not None:
             self.on_estado_cambiado()
+        if self.on_clips_actualizados is not None:
+            self.on_clips_actualizados()
 
     # Devuelve una lista tradicional con los clips que tengan el estado 'Aprobado'
     def obtener_clips_aprobados(self) -> list[CandidatoClip]:
+        if not self.clips or len(self.clips) == 0:
+            return []
         aprobados = []
         for i in range(len(self.clips)):
-            if self.estados[i] == "Aprobado":
+            if self.estados.get(i) == "Aprobado":
                 aprobados.append(self.clips[i])
         return aprobados
 
     # Cuenta cuántos clips hay en total, cuántos aprobados y cuántos descartados
     def obtener_conteo_estados(self) -> tuple[int, int, int]:
+        if not self.clips or len(self.clips) == 0:
+            return 0, 0, 0
         total = len(self.clips)
         aprobados = 0
 
         # Bucle tradicional para contar
-        for estado in self.estados.values():
-            if estado == "Aprobado":
+        for i in range(total):
+            if self.estados.get(i) == "Aprobado":
                 aprobados += 1
 
         descartados = total - aprobados
         return total, aprobados, descartados
 
-    # Busca archivos .mp4 en la carpeta y extrae los segundos de inicio y fin del nombre
+    # Carga clips directamente desde una carpeta de candidatos hidratando metadatos
+    def cargar_clips_desde_directorio(self, carpeta: str | Path) -> list[CandidatoClip]:
+        clips = self.escanear_directorio_candidatos(carpeta)
+        self.cargar_clips(clips)
+        return clips
+
+    # Busca archivos .mp4 en la carpeta y lee clips_info.json si existe para hidratar las etiquetas
     @staticmethod
-    def escanear_directorio_candidatos(carpeta: str | Path) -> list[CandidatoClip]:
-        ruta = Path(carpeta)
+    def escanear_directorio_candidatos(
+        carpeta: str | Path,
+        ruta_json_info: str | Path | None = None
+    ) -> list[CandidatoClip]:
+        ruta = Path(carpeta).resolve()
         if not ruta.exists():
             return []
+
+        # Buscamos si existe un archivo de persistencia clips_info.json
+        posibles_json = []
+        if ruta_json_info:
+            posibles_json.append(Path(ruta_json_info).resolve())
+        posibles_json.extend([
+            ruta / "clips_info.json",
+            ruta.parent / "clips_info.json",
+            Path("downloads/clips_info.json").resolve(),
+            Path("modulos/downloads/clips_info.json").resolve()
+        ])
+
+        mapa_info = {}
+        for pj in posibles_json:
+            if pj.exists():
+                try:
+                    with open(pj, "r", encoding="utf-8") as f:
+                        lista_datos = json.load(f)
+                    if isinstance(lista_datos, list):
+                        for item in lista_datos:
+                            nom = item.get("nombre_archivo")
+                            if nom:
+                                mapa_info[nom] = item
+                            # Indexamos también por patrón numérico de tiempo
+                            ini = item.get("segundo_inicio")
+                            fin = item.get("segundo_fin")
+                            if ini is not None and fin is not None:
+                                mapa_info[f"{ini}s_{fin}s"] = item
+                        print(f"[PanelClips] Hidratadas {len(lista_datos)} etiquetas desde: {pj.name}")
+                        break
+                except Exception as err:
+                    print(f"[PanelClips] Aviso al leer persistencia {pj.name}: {err}")
 
         archivos = sorted(ruta.glob("*.mp4"))
         clips = []
@@ -402,14 +480,32 @@ class PanelListaClips(ctk.CTkFrame):
                 inicio = 0
                 fin = 30
 
+            # Verificamos si tenemos datos persistidos en clips_info.json para este clip
+            clave_tiempo = f"{inicio}s_{fin}s"
+            info = mapa_info.get(f.name) or mapa_info.get(clave_tiempo)
+
+            if info:
+                categoria = info.get("categoria", "Sin clasificar")
+                confianza = float(info.get("confianza", 0.0))
+                puntuacion = float(info.get("puntuacion", 0.85))
+                inicio = int(info.get("segundo_inicio", inicio))
+                fin = int(info.get("segundo_fin", fin))
+                estado_str = info.get("estado", "Aprobado")
+                esta_aprobado = (estado_str != "Descartado")
+            else:
+                categoria = "Sin clasificar"
+                confianza = 0.0
+                puntuacion = 0.85
+                esta_aprobado = True
+
             nuevo_clip = CandidatoClip(
                 segundo_inicio=inicio,
                 segundo_fin=fin,
-                puntuacion=0.85,
+                puntuacion=puntuacion,
                 ruta_video=f,
-                categoria="Sin clasificar",
-                confianza_ia=0.0,
-                aprobado=True
+                categoria=categoria,
+                confianza_ia=confianza,
+                aprobado=esta_aprobado
             )
             clips.append(nuevo_clip)
 

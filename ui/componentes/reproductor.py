@@ -135,15 +135,27 @@ class ReproductorVideo(ctk.CTkFrame):
         return False
 
     # Carga un archivo de vídeo local y lo prepara para reproducir
-    def cargar_video(self, ruta_video: Path | str, auto_play: bool = True) -> None:
+    def cargar_video(self, ruta_video: Path | str | None, auto_play: bool = True) -> None:
+        if not ruta_video:
+            print("[Reproductor] Ruta de vídeo vacía o no especificada.")
+            self.detener()
+            return
+
         # Garantizamos que la llamada ocurra estrictamente en el hilo de Tkinter
         if threading.current_thread() != threading.main_thread():
             self.after(0, lambda: self.cargar_video(ruta_video, auto_play=auto_play))
             return
 
-        ruta = Path(ruta_video).resolve()
-        if not ruta.exists():
-            print(f"[Reproductor] Archivo no encontrado: {ruta}")
+        try:
+            ruta = Path(ruta_video).resolve()
+        except Exception as error_ruta:
+            print(f"[Reproductor] Ruta de vídeo no válida ({ruta_video}): {error_ruta}")
+            self.detener()
+            return
+
+        if not ruta.exists() or not ruta.is_file():
+            print(f"[Reproductor] Archivo de vídeo no encontrado en disco: {ruta}")
+            self.detener()
             return
 
         # Detenemos cualquier reproducción previa y cancelamos arranques pendientes
@@ -206,9 +218,13 @@ class ReproductorVideo(ctk.CTkFrame):
         if self.player:
             try:
                 self.player.stop()
+                # Desvinculamos el medio de VLC para liberar el descriptor del archivo en disco
+                self.player.set_media(None)
             except Exception:
                 pass
 
+        self._hwnd_vinculado = False
+        self.ruta_actual = None
         self.btn_play.configure(text="▶")
         self.slider_tiempo.set(0.0)
         self.lbl_tiempo.configure(text="00:00 / 00:00")
@@ -303,7 +319,7 @@ if __name__ == "__main__":
         or list(Path("modulos/downloads/candidatos").glob("*.mp4"))
     )
 
-    if clips_disponibles:
+    if clips_disponibles and len(clips_disponibles) > 0:
         print(f"Cargando clip de prueba: {clips_disponibles[0]}")
         app.after(500, lambda: rep.cargar_video(clips_disponibles[0]))
     else:
