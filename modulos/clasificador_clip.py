@@ -249,9 +249,19 @@ class ClasificadorVisual:
 
 
 # Vuelca la lista de clips clasificados en el archivo de persistencia clips_info.json
-def guardar_clips_info_json(clips: list[CandidatoClip], ruta_destino: Path | str) -> Path:
+def guardar_clips_info_json(
+    clips: list[CandidatoClip],
+    ruta_destino: Path | str,
+    metadatos_extraccion: dict | None = None
+) -> Path:
     destino = Path(ruta_destino).resolve()
     destino.parent.mkdir(parents=True, exist_ok=True)
+
+    meta = metadatos_extraccion or {
+        "peso_audio": 0.5,
+        "peso_chat": 0.5,
+        "perfil_nombre": "Equilibrado (50% Audio / 50% Chat)"
+    }
 
     datos = []
     for c in clips:
@@ -265,11 +275,19 @@ def guardar_clips_info_json(clips: list[CandidatoClip], ruta_destino: Path | str
             "puntuacion": c.puntuacion,
             "categoria": c.categoria,
             "confianza": round(c.confianza_ia, 4),
-            "estado": "Aprobado" if c.aprobado else "Pendiente"
+            "estado": "Aprobado" if c.aprobado else "Pendiente",
+            "peso_audio": meta.get("peso_audio", 0.5),
+            "peso_chat": meta.get("peso_chat", 0.5),
+            "perfil_nombre": meta.get("perfil_nombre", "")
         })
 
+    contenido = {
+        "metadatos_extraccion": meta,
+        "clips": datos
+    }
+
     with open(destino, "w", encoding="utf-8") as f:
-        json.dump(datos, f, indent=4, ensure_ascii=False)
+        json.dump(contenido, f, indent=4, ensure_ascii=False)
 
     print(f"[ClasificadorCLIP] Guardada persistencia en: {destino}")
     return destino
@@ -284,7 +302,9 @@ def cargar_clips_info_json(ruta_json: Path | str) -> list[dict]:
     try:
         with open(origen, "r", encoding="utf-8") as f:
             datos = json.load(f)
-        if isinstance(datos, list):
+        if isinstance(datos, dict):
+            return datos.get("clips", [])
+        elif isinstance(datos, list):
             return datos
     except Exception as error:
         print(f"[ClasificadorCLIP] Error al leer {origen.name}: {error}")

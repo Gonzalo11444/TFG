@@ -39,7 +39,7 @@ class PipelineClips:
     def __init__(
         self,
         carpeta_base: str | Path | None = None,
-        top_k: int = 5,
+        top_k: int = 6,
         duracion_clip: int = 30,
         margen_previo: int = 15,
         exclusion_deadzone: int = 45
@@ -111,7 +111,12 @@ class PipelineClips:
     def ejecutar(
         self,
         url_vod: str,
-        callback_progreso: Callable[[str, float], None] | None = None
+        callback_progreso: Callable[[str, float], None] | None = None,
+        num_clips: int = 6,
+        peso_audio: float = 0.5,
+        peso_chat: float = 0.5,
+        umbral_score: float = 0.5,
+        perfil_nombre: str = "Equilibrado (50% Audio / 50% Chat)"
     ) -> list[CandidatoClip]:
         url_limpia = self.validar_url_twitch(url_vod)
 
@@ -166,17 +171,25 @@ class PipelineClips:
         notificar("Fase 3/4: Detectando picos de intensidad con Supresión No Máxima...", 0.45)
 
         selector = SelectorMomentos(
-            peso_audio=0.5,
-            peso_chat=0.5,
+            peso_audio=peso_audio,
+            peso_chat=peso_chat,
             duracion_clip=self.duracion_clip,
             margen_previo=self.margen_previo,
-            exclusion_deadzone=self.exclusion_deadzone
+            exclusion_deadzone=self.exclusion_deadzone,
+            umbral_score=umbral_score
         )
 
-        candidatos = selector.seleccionar_clips(serie_temporal, top_k=self.top_k)
+        candidatos = selector.seleccionar_clips(serie_temporal, top_k=num_clips)
+
+        # Asegurar que tras NMS se seleccionen como máximo num_clips candidatos
+        if candidatos and len(candidatos) > num_clips:
+            candidatos = candidatos[:num_clips]
 
         if not candidatos:
-            raise RuntimeError("No se detectaron momentos destacados en el VOD analizado.")
+            raise RuntimeError(
+                f"No se detectaron momentos destacados que superen el umbral de puntuación ({umbral_score}). "
+                "Prueba con un perfil de detección diferente o sensibilidad 'Alta'."
+            )
 
         total_candidatos = len(candidatos)
         notificar(f"Fase 3/4: Descargando {total_candidatos} fragmentos de vídeo con yt-dlp...", 0.55)
@@ -231,7 +244,16 @@ class PipelineClips:
 
         # Volcado automático de persistencia estructurado en clips_info.json
         try:
-            self.guardar_clips_info(clips_finales)
+            self.guardar_clips_info(
+                clips_finales,
+                metadatos_extraccion={
+                    "peso_audio": peso_audio,
+                    "peso_chat": peso_chat,
+                    "perfil_nombre": perfil_nombre,
+                    "umbral_score": umbral_score,
+                    "num_clips": num_clips
+                }
+            )
         except Exception as error_guardado:
             print(f"[Aviso] No se pudo guardar clips_info.json: {error_guardado}")
 
@@ -242,12 +264,19 @@ class PipelineClips:
     def guardar_clips_info(
         self,
         clips: list[CandidatoClip],
-        ruta_json: Path | str | None = None
+        ruta_json: Path | str | None = None,
+        metadatos_extraccion: dict | None = None
     ) -> Path:
         if ruta_json is not None:
             destino = Path(ruta_json)
         else:
             destino = self.carpeta_base / "clips_info.json"
+
+        meta = metadatos_extraccion or {
+            "peso_audio": 0.5,
+            "peso_chat": 0.5,
+            "perfil_nombre": "Equilibrado (50% Audio / 50% Chat)"
+        }
 
         datos = []
         for c in clips:
@@ -261,11 +290,19 @@ class PipelineClips:
                 "puntuacion": c.puntuacion,
                 "categoria": c.categoria,
                 "confianza": round(c.confianza_ia, 4),
-                "estado": "Aprobado" if c.aprobado else "Pendiente"
+                "estado": "Aprobado" if c.aprobado else "Pendiente",
+                "peso_audio": meta.get("peso_audio", 0.5),
+                "peso_chat": meta.get("peso_chat", 0.5),
+                "perfil_nombre": meta.get("perfil_nombre", "")
             })
 
+        contenido = {
+            "metadatos_extraccion": meta,
+            "clips": datos
+        }
+
         with open(destino, "w", encoding="utf-8") as f:
-            json.dump(datos, f, indent=4, ensure_ascii=False)
+            json.dump(contenido, f, indent=4, ensure_ascii=False)
 
         print(f"[Pipeline] Guardada información y clasificación de clips en: {destino}")
         return destino

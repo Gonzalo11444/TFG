@@ -36,13 +36,15 @@ class SelectorMomentos:
         peso_chat: float = 0.5,
         duracion_clip: int = 40,
         margen_previo: int = 25,
-        exclusion_deadzone: int = 60
+        exclusion_deadzone: int = 60,
+        umbral_score: float = 0.0
     ):
         self.peso_audio = peso_audio
         self.peso_chat = peso_chat
         self.duracion_clip = duracion_clip
         self.margen_previo = margen_previo
         self.exclusion_deadzone = exclusion_deadzone
+        self.umbral_score = umbral_score
 
     def _normalizar_min_max(self, valores: list[float]) -> list[float]: #Escala los datos al rango [0, 1]
         if not valores:
@@ -89,10 +91,16 @@ class SelectorMomentos:
 
         return scores
 
-    def seleccionar_clips(self, serie: list[PuntoTemporal], top_k: int = 5) -> list[CandidatoClip]: #Selecciona los mejores clips usando una tecnica llamada Supresión No Máxima (NMS)  
+    def seleccionar_clips(
+        self,
+        serie: list[PuntoTemporal],
+        top_k: int = 6,
+        umbral_minimo: float | None = None
+    ) -> list[CandidatoClip]: #Selecciona los mejores clips usando una tecnica llamada Supresión No Máxima (NMS)  
         if not serie:
             return []
 
+        umbral_corte = self.umbral_score if umbral_minimo is None else umbral_minimo
         total_segundos = len(serie)
         scores_originales = self.calcular_puntuaciones(serie)
         
@@ -111,8 +119,8 @@ class SelectorMomentos:
                     mejor_score = scores_disponibles[i]
                     pico_idx = i
 
-            # Si ya no quedan segundos con señal positiva, dejamos de buscar
-            if pico_idx == -1 or mejor_score <= 0.0:
+            # Si ya no quedan segundos con señal positiva o que alcancen el umbral, dejamos de buscar
+            if pico_idx == -1 or mejor_score <= 0.0 or (umbral_corte > 0.0 and mejor_score < umbral_corte):
                 break
 
             # 2. Delimitamos el inicio y fin del clip alrededor del pico

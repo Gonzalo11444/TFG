@@ -12,6 +12,20 @@ import platform
 import subprocess
 import customtkinter as ctk
 
+# Mapeo de perfiles de detección y pesos (Audio / Chat)
+MAPA_PERFILES_DETECCION = {
+    "Equilibrado (50% Audio / 50% Chat)": {"peso_audio": 0.5, "peso_chat": 0.5},
+    "Streamer Emergente / Reacciones (80% Audio / 20% Chat)": {"peso_audio": 0.8, "peso_chat": 0.2},
+    "Comunidad Grande (30% Audio / 70% Chat)": {"peso_audio": 0.3, "peso_chat": 0.7}
+}
+
+# Mapeo de niveles de sensibilidad y umbral mínimo de puntuación
+MAPA_SENSIBILIDAD_DETECCION = {
+    "Normal (Recomendada)": 0.5,
+    "Alta (Más momentos)": 0.35,
+    "Estricta (Solo picos muy claros)": 0.65
+}
+
 
 # Abre la carpeta en el explorador de archivos según el sistema operativo
 def abrir_carpeta_sistema(ruta: Path | str) -> None:
@@ -224,10 +238,13 @@ class VistaInicio(ctk.CTkFrame):
             corner_radius=8,
             border_color="#444444"
         )
-        self.entry_url.pack(fill="x", pady=(0, 14))
+        self.entry_url.pack(fill="x", pady=(0, 12))
 
         # Permite pulsar 'Enter' directamente en la caja de texto para lanzar
         self.entry_url.bind("<Return>", lambda e: self._al_pulsar_procesar())
+
+        # 3.1 Sección de Configuración de Extracción de Clips
+        self._construir_seccion_configuracion(frame_input)
 
         # 4. Botón de acción principal
         self.btn_procesar = ctk.CTkButton(
@@ -240,7 +257,7 @@ class VistaInicio(ctk.CTkFrame):
             hover_color="#144870",
             command=self._al_pulsar_procesar
         )
-        self.btn_procesar.pack(fill="x", pady=(0, 4))
+        self.btn_procesar.pack(fill="x", pady=(2, 4))
 
         # 5. Barra de progreso y texto de fase actual
         self.frame_feedback = ctk.CTkFrame(self.card_central, fg_color="#181818", corner_radius=8)
@@ -381,6 +398,172 @@ class VistaInicio(ctk.CTkFrame):
             return
         abrir_carpeta_sistema(self.carpeta_salida)
 
+    # Construye el panel visual integrado de configuración de extracción
+    def _construir_seccion_configuracion(self, parent: ctk.CTkFrame) -> None:
+        frame_config = ctk.CTkFrame(
+            parent,
+            fg_color="#181818",
+            corner_radius=10,
+            border_width=1,
+            border_color="#2c2c2c"
+        )
+        frame_config.pack(fill="x", pady=(0, 14))
+
+        # Cabecera de la sección
+        frame_header = ctk.CTkFrame(frame_config, fg_color="transparent")
+        frame_header.pack(fill="x", padx=16, pady=(10, 8))
+
+        lbl_titulo_config = ctk.CTkLabel(
+            frame_header,
+            text="⚙️  Configuración de Extracción",
+            font=("Arial", 12, "bold"),
+            text_color="#e0e0e0"
+        )
+        lbl_titulo_config.pack(side="left")
+
+        lbl_badge_config = ctk.CTkLabel(
+            frame_header,
+            text="Parámetros Fases 2 y 3",
+            font=("Arial", 10),
+            text_color="#90caf9",
+            fg_color="#132433",
+            corner_radius=4,
+            padx=7,
+            pady=1
+        )
+        lbl_badge_config.pack(side="right")
+
+        # a) Control deslizante (CTkSlider) para el número de clips (3 a 15, default 6)
+        frame_slider = ctk.CTkFrame(frame_config, fg_color="transparent")
+        frame_slider.pack(fill="x", padx=16, pady=(0, 10))
+
+        frame_slider_header = ctk.CTkFrame(frame_slider, fg_color="transparent")
+        frame_slider_header.pack(fill="x", pady=(0, 4))
+
+        lbl_slider_desc = ctk.CTkLabel(
+            frame_slider_header,
+            text="Número de clips candidatos:",
+            font=("Arial", 11),
+            text_color="#b0b0b0"
+        )
+        lbl_slider_desc.pack(side="left")
+
+        self.lbl_num_clips = ctk.CTkLabel(
+            frame_slider_header,
+            text="6 clips",
+            font=("Arial", 11, "bold"),
+            text_color="#ffffff",
+            fg_color="#1f6aa5",
+            corner_radius=6,
+            padx=8,
+            pady=1
+        )
+        self.lbl_num_clips.pack(side="right")
+
+        self.slider_num_clips = ctk.CTkSlider(
+            frame_slider,
+            from_=3,
+            to=15,
+            number_of_steps=12,
+            height=16,
+            button_color="#1f6aa5",
+            button_hover_color="#144870",
+            progress_color="#1f6aa5",
+            fg_color="#2b2b2b",
+            command=self._al_cambiar_slider_clips
+        )
+        self.slider_num_clips.set(6)
+        self.slider_num_clips.pack(fill="x", pady=(2, 0))
+
+        # b y c) Selectores en 2 columnas: Perfil de Detección y Sensibilidad
+        frame_selectores = ctk.CTkFrame(frame_config, fg_color="transparent")
+        frame_selectores.pack(fill="x", padx=16, pady=(0, 12))
+        frame_selectores.grid_columnconfigure(0, weight=3)
+        frame_selectores.grid_columnconfigure(1, weight=2)
+
+        # Columna 1: Perfil de detección (Audio / Chat)
+        frame_col_perfil = ctk.CTkFrame(frame_selectores, fg_color="transparent")
+        frame_col_perfil.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+        lbl_perfil = ctk.CTkLabel(
+            frame_col_perfil,
+            text="Perfil de detección:",
+            font=("Arial", 11),
+            text_color="#b0b0b0",
+            anchor="w"
+        )
+        lbl_perfil.pack(fill="x", pady=(0, 4))
+
+        self.opt_perfil = ctk.CTkOptionMenu(
+            frame_col_perfil,
+            values=list(MAPA_PERFILES_DETECCION.keys()),
+            font=("Arial", 11),
+            dropdown_font=("Arial", 11),
+            fg_color="#262626",
+            button_color="#1f6aa5",
+            button_hover_color="#144870",
+            dropdown_fg_color="#1c1c1c",
+            height=32
+        )
+        self.opt_perfil.set("Equilibrado (50% Audio / 50% Chat)")
+        self.opt_perfil.pack(fill="x")
+
+        # Columna 2: Sensibilidad (Umbral de puntuación)
+        frame_col_sens = ctk.CTkFrame(frame_selectores, fg_color="transparent")
+        frame_col_sens.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        lbl_sens = ctk.CTkLabel(
+            frame_col_sens,
+            text="Sensibilidad:",
+            font=("Arial", 11),
+            text_color="#b0b0b0",
+            anchor="w"
+        )
+        lbl_sens.pack(fill="x", pady=(0, 4))
+
+        self.opt_sensibilidad = ctk.CTkOptionMenu(
+            frame_col_sens,
+            values=list(MAPA_SENSIBILIDAD_DETECCION.keys()),
+            font=("Arial", 11),
+            dropdown_font=("Arial", 11),
+            fg_color="#262626",
+            button_color="#1f6aa5",
+            button_hover_color="#144870",
+            dropdown_fg_color="#1c1c1c",
+            height=32
+        )
+        self.opt_sensibilidad.set("Normal (Recomendada)")
+        self.opt_sensibilidad.pack(fill="x")
+
+    # Actualiza dinámicamente la etiqueta de número de clips al mover el slider
+    def _al_cambiar_slider_clips(self, valor: float) -> None:
+        clips = int(round(valor))
+        self.lbl_num_clips.configure(text=f"{clips} clips")
+
+    # Devuelve los parámetros de extracción configurados por el usuario
+    def obtener_configuracion_extraccion(self) -> dict:
+        num_clips = int(round(self.slider_num_clips.get()))
+        num_clips = max(3, min(15, num_clips))
+
+        perfil_elegido = self.opt_perfil.get()
+        sensibilidad_elegida = self.opt_sensibilidad.get()
+
+        pesos = MAPA_PERFILES_DETECCION.get(
+            perfil_elegido,
+            {"peso_audio": 0.5, "peso_chat": 0.5}
+        )
+        umbral = MAPA_SENSIBILIDAD_DETECCION.get(
+            sensibilidad_elegida,
+            0.5
+        )
+
+        return {
+            "num_clips": num_clips,
+            "peso_audio": float(pesos["peso_audio"]),
+            "peso_chat": float(pesos["peso_chat"]),
+            "umbral_score": float(umbral)
+        }
+
     # Devuelve el texto actualmente escrito en el campo de URL
     def obtener_url(self) -> str:
         return self.entry_url.get().strip()
@@ -390,6 +573,9 @@ class VistaInicio(ctk.CTkFrame):
         self._procesando = activo
         if activo:
             self.entry_url.configure(state="disabled")
+            self.slider_num_clips.configure(state="disabled")
+            self.opt_perfil.configure(state="disabled")
+            self.opt_sensibilidad.configure(state="disabled")
             self.btn_procesar.configure(state="disabled", text="⏳ Procesando en segundo plano...")
             self.btn_abrir_carpeta.configure(state="disabled")
             self.btn_ver_existentes.configure(state="disabled")
@@ -402,6 +588,9 @@ class VistaInicio(ctk.CTkFrame):
             )
         else:
             self.entry_url.configure(state="normal")
+            self.slider_num_clips.configure(state="normal")
+            self.opt_perfil.configure(state="normal")
+            self.opt_sensibilidad.configure(state="normal")
             self.btn_procesar.configure(state="normal", text="🚀  Procesar y Extraer Clips")
             self.btn_abrir_carpeta.configure(state="normal")
             self.btn_ver_existentes.configure(state="normal")

@@ -144,6 +144,12 @@ class AppPrendeClips(ctk.CTk):
         self.carpeta_candidatos.mkdir(parents=True, exist_ok=True)
         self.carpeta_verticales.mkdir(parents=True, exist_ok=True)
 
+        # Metadatos dinámicos de extracción de la sesión
+        self.peso_audio = 0.5
+        self.peso_chat = 0.5
+        self.perfil_nombre = "Equilibrado (50% Audio / 50% Chat)"
+        self._cargar_metadatos_extraccion_disco()
+
         # Contenedor principal de vistas
         self._construir_vistas()
 
@@ -152,6 +158,34 @@ class AppPrendeClips(ctk.CTk):
 
         # Mostramos la vista de inicio por defecto
         self.mostrar_vista_inicio()
+
+    # Carga los metadatos de extracción (pesos y perfil) desde clips_info.json si existen
+    def _cargar_metadatos_extraccion_disco(self) -> None:
+        posibles = [
+            self.carpeta_base / "clips_info.json",
+            directorio_raiz / "downloads" / "clips_info.json",
+            directorio_raiz / "modulos" / "downloads" / "clips_info.json"
+        ]
+        for p in posibles:
+            if p.exists():
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        datos = json.load(f)
+                    if isinstance(datos, dict) and "metadatos_extraccion" in datos:
+                        meta = datos["metadatos_extraccion"]
+                        self.peso_audio = float(meta.get("peso_audio", self.peso_audio))
+                        self.peso_chat = float(meta.get("peso_chat", self.peso_chat))
+                        self.perfil_nombre = str(meta.get("perfil_nombre", self.perfil_nombre))
+                        return
+                    elif isinstance(datos, list) and datos:
+                        primer = datos[0]
+                        if "peso_audio" in primer:
+                            self.peso_audio = float(primer.get("peso_audio", self.peso_audio))
+                            self.peso_chat = float(primer.get("peso_chat", self.peso_chat))
+                            self.perfil_nombre = str(primer.get("perfil_nombre", self.perfil_nombre))
+                            return
+                except Exception:
+                    pass
 
     # Determina la carpeta base para lecturas y descargas
     def _localizar_carpeta_base(self, ruta_manual: str | Path | None) -> Path:
@@ -237,9 +271,11 @@ class AppPrendeClips(ctk.CTk):
         )
         self.lbl_detalle_badge.pack()
 
+        peso_aud_pct = int(round(self.peso_audio * 100))
+        peso_chat_pct = int(round(self.peso_chat * 100))
         self.lbl_detalle_metricas = ctk.CTkLabel(
             self.panel_detalles,
-            text="Score Algorítmico: --  |  Estimación: Audio (50%) + Chat (50%)",
+            text=f"Score Algorítmico: --  |  Estimación: Audio ({peso_aud_pct}%) + Chat ({peso_chat_pct}%)",
             font=("Arial", 11),
             text_color="#aaaaaa",
             anchor="w"
@@ -393,7 +429,11 @@ class AppPrendeClips(ctk.CTk):
         self.lbl_detalle_titulo.configure(text="No hay clips disponibles")
         self.frame_detalle_badge.configure(fg_color="#424242")
         self.lbl_detalle_badge.configure(text="Sin clips")
-        self.lbl_detalle_metricas.configure(text="No hay clips candidatos cargados.")
+        peso_aud_pct = int(round(self.peso_audio * 100))
+        peso_chat_pct = int(round(self.peso_chat * 100))
+        self.lbl_detalle_metricas.configure(
+            text=f"No hay clips candidatos cargados.  |  Estimación: Audio ({peso_aud_pct}%) + Chat ({peso_chat_pct}%)"
+        )
 
     # Limpia la interfaz cuando el usuario pulsa en purgar desde la vista de inicio
     def _al_purgar_clips(self) -> None:
@@ -406,6 +446,7 @@ class AppPrendeClips(ctk.CTk):
         if self._ejecutando_pipeline or (self._hilo_pipeline and self._hilo_pipeline.is_alive()):
             return
 
+        self._cargar_metadatos_extraccion_disco()
         clips = self.panel_clips.cargar_clips_desde_directorio(self.carpeta_candidatos)
         if clips and len(clips) > 0:
             self.mostrar_vista_validacion(clips)
@@ -422,6 +463,18 @@ class AppPrendeClips(ctk.CTk):
         # NUNCA se borran clips automáticamente; la persistencia está asegurada
         self._ejecutando_pipeline = True
         self.vista_inicio.establecer_modo_procesando(True)
+
+        # Obtenemos los parámetros parametrizados de extracción configurados por el usuario
+        config_extraccion = self.vista_inicio.obtener_configuracion_extraccion()
+        num_clips = config_extraccion.get("num_clips", 6)
+        peso_audio = config_extraccion.get("peso_audio", 0.5)
+        peso_chat = config_extraccion.get("peso_chat", 0.5)
+        umbral_score = config_extraccion.get("umbral_score", 0.5)
+        perfil_nombre = self.vista_inicio.opt_perfil.get()
+
+        self.peso_audio = peso_audio
+        self.peso_chat = peso_chat
+        self.perfil_nombre = perfil_nombre
 
         def tarea_hilo():
             try:
@@ -440,7 +493,12 @@ class AppPrendeClips(ctk.CTk):
 
                 clips_obtenidos = pipeline.ejecutar(
                     url_vod=url,
-                    callback_progreso=callback_progreso
+                    callback_progreso=callback_progreso,
+                    num_clips=num_clips,
+                    peso_audio=peso_audio,
+                    peso_chat=peso_chat,
+                    umbral_score=umbral_score,
+                    perfil_nombre=perfil_nombre
                 )
 
                 def exito():
@@ -505,8 +563,10 @@ class AppPrendeClips(ctk.CTk):
             texto_badge = clip.categoria
 
         self.lbl_detalle_badge.configure(text=texto_badge)
+        peso_aud_pct = int(round(self.peso_audio * 100))
+        peso_chat_pct = int(round(self.peso_chat * 100))
         self.lbl_detalle_metricas.configure(
-            text=f"Score Algorítmico: {clip.puntuacion:.2f}  |  Estimación: Audio (50%) + Chat (50%)"
+            text=f"Score Algorítmico: {clip.puntuacion:.2f}  |  Estimación: Audio ({peso_aud_pct}%) + Chat ({peso_chat_pct}%)"
         )
 
     # Lanza la inferencia de CLIP bajo demanda en la vista de validación
@@ -604,6 +664,12 @@ class AppPrendeClips(ctk.CTk):
             return None
 
         ruta_json = self.carpeta_base / "clips_info.json"
+        meta = {
+            "peso_audio": self.peso_audio,
+            "peso_chat": self.peso_chat,
+            "perfil_nombre": self.perfil_nombre
+        }
+
         datos = []
         for i, clip in enumerate(self.panel_clips.clips):
             nombre = clip.ruta_video.name if clip.ruta_video else f"clip_{clip.segundo_inicio}s_{clip.segundo_fin}s.mp4"
@@ -617,13 +683,21 @@ class AppPrendeClips(ctk.CTk):
                 "puntuacion": clip.puntuacion,
                 "categoria": clip.categoria,
                 "confianza": round(clip.confianza_ia, 4),
-                "estado": estado
+                "estado": estado,
+                "peso_audio": self.peso_audio,
+                "peso_chat": self.peso_chat,
+                "perfil_nombre": self.perfil_nombre
             })
+
+        contenido = {
+            "metadatos_extraccion": meta,
+            "clips": datos
+        }
 
         try:
             ruta_json.parent.mkdir(parents=True, exist_ok=True)
             with open(ruta_json, "w", encoding="utf-8") as f:
-                json.dump(datos, f, indent=4, ensure_ascii=False)
+                json.dump(contenido, f, indent=4, ensure_ascii=False)
             print(f"[App] Persistencia actualizada en: {ruta_json.resolve()}")
 
             # Si la carpeta base es modulos/downloads, reflejar también en downloads/ en la raíz si procede
@@ -632,7 +706,7 @@ class AppPrendeClips(ctk.CTk):
                 try:
                     raiz_downloads.parent.mkdir(parents=True, exist_ok=True)
                     with open(raiz_downloads, "w", encoding="utf-8") as f_raiz:
-                        json.dump(datos, f_raiz, indent=4, ensure_ascii=False)
+                        json.dump(contenido, f_raiz, indent=4, ensure_ascii=False)
                 except Exception:
                     pass
 

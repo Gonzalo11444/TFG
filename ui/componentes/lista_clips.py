@@ -451,19 +451,25 @@ class PanelListaClips(ctk.CTkFrame):
             if pj.exists():
                 try:
                     with open(pj, "r", encoding="utf-8") as f:
-                        lista_datos = json.load(f)
-                    if isinstance(lista_datos, list):
-                        for item in lista_datos:
-                            nom = item.get("nombre_archivo")
-                            if nom:
-                                mapa_info[nom] = item
-                            # Indexamos también por patrón numérico de tiempo
-                            ini = item.get("segundo_inicio")
-                            fin = item.get("segundo_fin")
-                            if ini is not None and fin is not None:
-                                mapa_info[f"{ini}s_{fin}s"] = item
-                        print(f"[PanelClips] Hidratadas {len(lista_datos)} etiquetas desde: {pj.name}")
-                        break
+                        contenido = json.load(f)
+                    if isinstance(contenido, dict):
+                        lista_datos = contenido.get("clips", [])
+                    elif isinstance(contenido, list):
+                        lista_datos = contenido
+                    else:
+                        lista_datos = []
+
+                    for item in lista_datos:
+                        nom = item.get("nombre_archivo")
+                        if nom:
+                            mapa_info[nom] = item
+                        # Indexamos también por patrón numérico de tiempo
+                        ini = item.get("segundo_inicio")
+                        fin = item.get("segundo_fin")
+                        if ini is not None and fin is not None:
+                            mapa_info[f"{ini}s_{fin}s"] = item
+                    print(f"[PanelClips] Hidratadas {len(lista_datos)} etiquetas desde: {pj.name}")
+                    break
                 except Exception as err:
                     print(f"[PanelClips] Aviso al leer persistencia {pj.name}: {err}")
 
