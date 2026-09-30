@@ -17,6 +17,20 @@ try:
 except ImportError:
     from procesamiento_senales import PuntoTemporal, ProcesadorSenales
 
+# Import de la normalización adaptativa de audio
+try:
+    from modulos.analizador_audio import normalizar_volumen_adaptativo
+except ImportError:
+    try:
+        from analizador_audio import normalizar_volumen_adaptativo
+    except ImportError:
+        def normalizar_volumen_adaptativo(valores, **kwargs):
+            if not valores:
+                return []
+            min_v, max_v = min(valores), max(valores)
+            rango = max_v - min_v
+            return [(v - min_v) / rango if rango > 0 else 0.0 for v in valores]
+
 
 @dataclass(frozen=True, slots=True)
 class CandidatoClip:
@@ -45,6 +59,10 @@ class SelectorMomentos:
         self.margen_previo = margen_previo
         self.exclusion_deadzone = exclusion_deadzone
         self.umbral_score = umbral_score
+
+    def _normalizar_audio(self, valores: list[float]) -> list[float]:
+        """Normalización adaptativa de audio basada en percentiles estadísticos del VOD."""
+        return normalizar_volumen_adaptativo(valores)
 
     def _normalizar_min_max(self, valores: list[float]) -> list[float]: #Escala los datos al rango [0, 1]
         if not valores:
@@ -79,8 +97,8 @@ class SelectorMomentos:
             volumenes.append(p.volumen_dbfs)
             chats.append(float(p.mensajes_chat))
 
-        # Normalizamos ambas para que compitan en la misma escala (0 a 1)
-        norm_audio = self._normalizar_min_max(volumenes)
+        # Normalizamos audio de forma adaptativa y chat mediante min-max
+        norm_audio = self._normalizar_audio(volumenes)
         norm_chat = self._normalizar_min_max(chats)
 
         # Calculamos la media ponderada segundo a segundo

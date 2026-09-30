@@ -74,6 +74,10 @@ class ProcesadorSenales:
 
         return valores_dbfs
 
+    def analizar_volumen(self, limite_segundos: int | None = None) -> list[float]:
+        """Alias para procesar_audio() compatible con la interfaz de modulos.analizador_audio."""
+        return self.procesar_audio(limite_segundos=limite_segundos)
+
     def procesar_chat(self) -> dict[int, int]:#Lee el json y cuenta mensajes por segundo
         print(f"Procesando chat: {self.ruta_chat.name}...")
         with open(self.ruta_chat, "r", encoding="utf-8") as f:

@@ -3,6 +3,11 @@
 
 from modulos.descarga_twitch import TwitchDescarga
 from modulos.procesamiento_senales import ProcesadorSenales, PuntoTemporal
+from modulos.analizador_audio import (
+    AnalizadorAudio,
+    normalizar_volumen_adaptativo,
+    analizar_volumen
+)
 from modulos.seleccion_temporal import (
     SelectorMomentos,
     DescargadorFragmentos,
@@ -16,6 +21,9 @@ __all__ = [
     "TwitchDescarga",
     "ProcesadorSenales",
     "PuntoTemporal",
+    "AnalizadorAudio",
+    "normalizar_volumen_adaptativo",
+    "analizar_volumen",
     "SelectorMomentos",
     "DescargadorFragmentos",
     "CandidatoClip",
