@@ -17,12 +17,12 @@ try:
 except ImportError:
     from procesamiento_senales import PuntoTemporal, ProcesadorSenales
 
-# Import de la normalización adaptativa de audio
+# Import de la normalización adaptativa y suavizado temporal de audio
 try:
-    from modulos.analizador_audio import normalizar_volumen_adaptativo
+    from modulos.analizador_audio import normalizar_volumen_adaptativo, suavizar_media_movil
 except ImportError:
     try:
-        from analizador_audio import normalizar_volumen_adaptativo
+        from analizador_audio import normalizar_volumen_adaptativo, suavizar_media_movil
     except ImportError:
         def normalizar_volumen_adaptativo(valores, **kwargs):
             if not valores:
@@ -30,6 +30,14 @@ except ImportError:
             min_v, max_v = min(valores), max(valores)
             rango = max_v - min_v
             return [(v - min_v) / rango if rango > 0 else 0.0 for v in valores]
+
+        def suavizar_media_movil(serie, ventana=5):
+            import numpy as np
+            arr = np.asarray(serie, dtype=np.float64)
+            if arr.size == 0 or ventana <= 1 or arr.size < ventana:
+                return np.clip(arr, 0.0, 1.0)
+            kernel = np.ones(ventana, dtype=np.float64) / ventana
+            return np.clip(np.convolve(arr, kernel, mode="same"), 0.0, 1.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,9 +68,17 @@ class SelectorMomentos:
         self.exclusion_deadzone = exclusion_deadzone
         self.umbral_score = umbral_score
 
-    def _normalizar_audio(self, valores: list[float]) -> list[float]:
-        """Normalización adaptativa de audio basada en percentiles estadísticos del VOD."""
-        return normalizar_volumen_adaptativo(valores)
+    def _normalizar_audio(self, valores: list[float], ventana_suavizado: int = 5) -> list[float]:
+        """
+        Normalización adaptativa de audio y suavizado temporal por media móvil.
+        Aplica suavizado con ventana de 5 segundos para penalizar ruidos impulsivos
+        aislados y destacar emociones sostenidas (risas, gritos, hype).
+        """
+        norm = normalizar_volumen_adaptativo(valores)
+        if not norm:
+            return []
+        suavizado = suavizar_media_movil(norm, ventana=ventana_suavizado)
+        return [round(float(v), 4) for v in suavizado]
 
     def _normalizar_min_max(self, valores: list[float]) -> list[float]: #Escala los datos al rango [0, 1]
         if not valores:

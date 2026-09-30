@@ -105,6 +105,45 @@ def normalizar_volumen_adaptativo(
     return [round(float(s), 4) for s in scores_clipeados]
 
 
+def suavizar_media_movil(
+    serie: np.ndarray | Sequence[float],
+    ventana: int = 5
+) -> np.ndarray:
+    """
+    Aplica suavizado temporal por media móvil (Moving Average) mediante convolución uniforme.
+
+    Penaliza ruidos o golpes secos aislados de 1 segundo (ej. un golpe accidental al micrófono)
+    y realza bloques sostenidos de intensidad emocional (risas, gritos o celebraciones continuadas).
+
+    Parámetros:
+        serie: Array o secuencia temporal de valores numéricos (habitualmente en el rango [0.0, 1.0]).
+        ventana: Ancho de la ventana de suavizado en segundos (defecto: 5).
+
+    Retorna:
+        np.ndarray: Serie temporal suavizada preservando la longitud original del array y recortada a [0.0, 1.0].
+    """
+    if serie is None:
+        return np.array([], dtype=np.float64)
+
+    try:
+        arr = np.asarray(serie, dtype=np.float64)
+    except (ValueError, TypeError):
+        return np.array([], dtype=np.float64)
+
+    # Casos borde defensivos: array vacío, ventana no válida o longitud menor que la ventana
+    if arr.size == 0:
+        return arr
+
+    if ventana <= 1 or arr.size < ventana:
+        return np.clip(arr, 0.0, 1.0)
+
+    # Convolución uniforme con mode='same' para preservar exactamente la longitud original
+    kernel = np.ones(ventana, dtype=np.float64) / ventana
+    suavizado = np.convolve(arr, kernel, mode="same")
+
+    return np.clip(suavizado, 0.0, 1.0)
+
+
 def extraer_volumen_dbfs(
     ruta_audio: str | Path,
     limite_segundos: int | None = None,
@@ -270,9 +309,18 @@ class AnalizadorAudio:
         """Alias para máxima compatibilidad con ProcesadorSenales.procesar_audio()."""
         return self.analizar_volumen(limite_segundos=limite_segundos, normalizar=False)
 
-    def normalizar(self, volumenes: Sequence[float] | np.ndarray) -> list[float]:
-        """Normaliza una serie de dBFS aplicando el esquema adaptativo configurado."""
-        return normalizar_volumen_adaptativo(
+    def suavizar(self, serie: np.ndarray | Sequence[float], ventana: int = 5) -> np.ndarray:
+        """Aplica suavizado temporal por media móvil sobre la serie proporcionada."""
+        return suavizar_media_movil(serie=serie, ventana=ventana)
+
+    def normalizar(
+        self,
+        volumenes: Sequence[float] | np.ndarray,
+        suavizar: bool = False,
+        ventana_suavizado: int = 5
+    ) -> list[float]:
+        """Normaliza una serie de dBFS aplicando el esquema adaptativo y opcionalmente suavizado."""
+        norm = normalizar_volumen_adaptativo(
             volumenes=volumenes,
             metodo=self.metodo_normalizacion,
             percentil_base=self.percentil_base,
@@ -280,6 +328,10 @@ class AnalizadorAudio:
             z_score_techo=self.z_score_techo,
             umbral_silencio_dbfs=self.umbral_silencio_dbfs
         )
+        if suavizar:
+            suavizado = suavizar_media_movil(norm, ventana=ventana_suavizado)
+            return [round(float(s), 4) for s in suavizado]
+        return norm
 
 
 if __name__ == "__main__":

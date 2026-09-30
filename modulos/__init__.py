@@ -6,7 +6,8 @@ from modulos.procesamiento_senales import ProcesadorSenales, PuntoTemporal
 from modulos.analizador_audio import (
     AnalizadorAudio,
     normalizar_volumen_adaptativo,
-    analizar_volumen
+    analizar_volumen,
+    suavizar_media_movil
 )
 from modulos.seleccion_temporal import (
     SelectorMomentos,
@@ -24,6 +25,7 @@ __all__ = [
     "AnalizadorAudio",
     "normalizar_volumen_adaptativo",
     "analizar_volumen",
+    "suavizar_media_movil",
     "SelectorMomentos",
     "DescargadorFragmentos",
     "CandidatoClip",
