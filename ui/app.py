@@ -64,6 +64,15 @@ except ImportError:
     except ImportError:
         DialogoConfigurarSplit = None
 
+try:
+    from modulos.buscador_streamer import DirectoReciente, obtener_ultimos_vods
+except ImportError:
+    try:
+        from buscador_streamer import DirectoReciente, obtener_ultimos_vods
+    except ImportError:
+        DirectoReciente = None
+        obtener_ultimos_vods = None
+
 
 
 class VentanaExitoRender(ctk.CTkToplevel):
@@ -139,8 +148,8 @@ class AppPrendeClips(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         self.title("PrendeClips - Pipeline End-to-End de Twitch")
-        self.geometry("1200x750")
-        self.minsize(980, 620)
+        self.geometry("1020x840")
+        self.minsize(960, 780)
 
         # Variables de control de estado de hilos
         self._ejecutando_pipeline = False
@@ -412,6 +421,10 @@ class AppPrendeClips(ctk.CTk):
 
         self.frame_validacion.pack_forget()
         self.vista_inicio.pack(fill="both", expand=True)
+        if hasattr(self.vista_inicio, "resetear_scroll"):
+            self.vista_inicio.resetear_scroll()
+        if hasattr(self.vista_inicio, "actualizar_adaptabilidad"):
+            self.vista_inicio.actualizar_adaptabilidad()
         self.update_idletasks()
 
     # Bloquea o desbloquea los controles de navegación y acciones durante tareas pesadas
@@ -503,6 +516,27 @@ class AppPrendeClips(ctk.CTk):
             self.vista_inicio.mostrar_error(
                 f"No se encontraron clips en '{self.carpeta_candidatos.name}'. Pega una URL para procesar."
             )
+
+    # -------------------------------------------------------------------------
+    # Integración con Buscador de Streamers
+    # -------------------------------------------------------------------------
+    def buscar_directos_streamer(self, canal: str, limite: int = 5) -> list[DirectoReciente]:
+        """Busca los VODs más recientes de un streamer usando yt-dlp."""
+        if obtener_ultimos_vods is not None:
+            return obtener_ultimos_vods(canal, limite=limite)
+        return []
+
+    @property
+    def entry_streamer(self):
+        return getattr(self.vista_inicio, "entry_streamer", None)
+
+    @property
+    def btn_buscar_streamer(self):
+        return getattr(self.vista_inicio, "btn_buscar_streamer", None)
+
+    @property
+    def cmb_vods_recientes(self):
+        return getattr(self.vista_inicio, "cmb_vods_recientes", None)
 
     # Lanza el pipeline completo en un hilo secundario sin congelar la ventana
     def _ejecutar_pipeline_fondo(self, url: str) -> None:

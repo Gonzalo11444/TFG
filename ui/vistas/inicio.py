@@ -10,7 +10,19 @@ from typing import Callable
 import os
 import platform
 import subprocess
+import threading
+import tkinter as tk
+from tkinter import ttk
 import customtkinter as ctk
+
+try:
+    from modulos.buscador_streamer import DirectoReciente, obtener_ultimos_vods
+except ImportError:
+    try:
+        from buscador_streamer import DirectoReciente, obtener_ultimos_vods
+    except ImportError:
+        DirectoReciente = None
+        obtener_ultimos_vods = None
 
 # Mapeo de perfiles de detección y pesos (Audio / Chat)
 MAPA_PERFILES_DETECCION = {
@@ -168,77 +180,293 @@ class VistaInicio(ctk.CTkFrame):
 
         self._procesando = False
 
-        # Configuración de rejilla principal centrada
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=0)
-        self.grid_rowconfigure(2, weight=1)
-        self.grid_columnconfigure(0, weight=1)
+        # ---------------------------------------------------------------------
+        # Contenedor responsive y desplazable: Frame central + Canvas + Scrollbar
+        # ---------------------------------------------------------------------
+        color_fondo = self._apply_appearance_mode(self.cget("fg_color"))
+        if not color_fondo or color_fondo == "transparent":
+            color_fondo = "gray17"
 
-        # Contenedor central flotante
+        # Frame central contenedor que agrupa el Canvas y el Scrollbar inmediatamente pegados
+        self.frame_central = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame_central.pack(expand=True, fill="both")
+
+        self.canvas = tk.Canvas(
+            self.frame_central,
+            bg=color_fondo,
+            highlightthickness=0,
+            bd=0
+        )
+        self.scrollbar = ttk.Scrollbar(
+            self.frame_central,
+            orient="vertical",
+            command=self.canvas.yview
+        )
+
+        self._scrollbar_visible = True
+
+        def _al_actualizar_scroll(first, last):
+            try:
+                f1, f2 = float(first), float(last)
+                self.scrollbar.set(first, last)
+                # Scrollbar condicional: si el contenido cabe entero verticalmente, ocultar barra
+                if (f2 - f1) >= 0.999:
+                    if f1 > 0.001:
+                        try:
+                            self.canvas.yview_moveto(0.0)
+                        except Exception:
+                            pass
+                    if self._scrollbar_visible:
+                        self.scrollbar.pack_forget()
+                        self._scrollbar_visible = False
+                else:
+                    if not self._scrollbar_visible:
+                        self.scrollbar.pack(side="right", fill="y")
+                        self._scrollbar_visible = True
+            except Exception:
+                pass
+
+        self.canvas.configure(yscrollcommand=_al_actualizar_scroll)
+
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        # Frame interior que aloja todo el contenido de la vista
+        self.frame_interior = ctk.CTkFrame(self.canvas, fg_color="transparent")
+
+        self.canvas_window = self.canvas.create_window(
+            (0, 0),
+            window=self.frame_interior,
+            anchor="nw"
+        )
+
+        # Ajuste dinámico de la región desplazable cada vez que cambie el contenido interior
+        def _al_configurar_interior(event=None):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+        self.frame_interior.bind("<Configure>", _al_configurar_interior)
+
+        # Ajuste dinámico del ancho del frame interior al ancho visible del Canvas
+        def _al_configurar_canvas(event):
+            self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+        self.canvas.bind("<Configure>", _al_configurar_canvas)
+
+        # Adaptabilidad responsive ante el cambio de tamaño de la ventana
+        self._ultimo_ancho_vista = 0
+        def _al_configurar_vista(event):
+            if event.widget in (self, getattr(self, "_canvas", None)):
+                if abs(event.width - self._ultimo_ancho_vista) >= 4:
+                    self._ultimo_ancho_vista = event.width
+                    self.actualizar_adaptabilidad(event.width)
+
+        self.bind("<Configure>", _al_configurar_vista)
+
+        # Configuración de scroll natural con rueda del ratón
+        self._configurar_eventos_scroll()
+
+        # Construcción del contenido dentro del frame interior
         self._construir_contenido()
+
+    def actualizar_adaptabilidad(self, ancho_total: int | None = None) -> None:
+        """Ajusta dinámicamente el centrado y los márgenes laterales del frame central."""
+        try:
+            if not self.winfo_exists():
+                return
+            if ancho_total is None or ancho_total <= 1:
+                ancho_total = self.winfo_width()
+            if ancho_total <= 1:
+                return
+
+            # Ancho proporcional armónico:
+            # - En resoluciones reducidas (960px): ancho ~900-912px (márgenes laterales ~24px)
+            # - En resolución base (1020px): ancho ~950-960px (márgenes laterales ~30px)
+            # - En pantallas maximizadas (1200px - 1920px+): ancho máximo armónico de 960px centrado
+            ancho_deseado = min(960, max(840, ancho_total - 60))
+            pad_x = max(10, (ancho_total - ancho_deseado) // 2)
+
+            if hasattr(self, "frame_central") and self.frame_central.winfo_exists():
+                self.frame_central.pack_configure(padx=pad_x, pady=(6, 10))
+        except Exception as e:
+            print(f"[VistaInicio] Error en actualizar_adaptabilidad: {e}")
+
+    def _configurar_eventos_scroll(self) -> None:
+        """Configura los bindings de la rueda del ratón para Windows y Linux."""
+        self.bind("<Enter>", self._al_entrar_vista)
+        self.bind("<Leave>", self._al_salir_vista)
+        self.canvas.bind("<MouseWheel>", self._al_mousewheel)
+        self.canvas.bind("<Button-4>", self._al_mousewheel)
+        self.canvas.bind("<Button-5>", self._al_mousewheel)
+        self.frame_interior.bind("<MouseWheel>", self._al_mousewheel)
+        self.frame_interior.bind("<Button-4>", self._al_mousewheel)
+        self.frame_interior.bind("<Button-5>", self._al_mousewheel)
+        if hasattr(self, "frame_central"):
+            self.frame_central.bind("<MouseWheel>", self._al_mousewheel)
+            self.frame_central.bind("<Button-4>", self._al_mousewheel)
+            self.frame_central.bind("<Button-5>", self._al_mousewheel)
+
+    def _al_entrar_vista(self, event=None) -> None:
+        """Activa el scroll con ratón en toda la ventana al entrar a VistaInicio."""
+        try:
+            self.bind_all("<MouseWheel>", self._al_mousewheel)
+            self.bind_all("<Button-4>", self._al_mousewheel)
+            self.bind_all("<Button-5>", self._al_mousewheel)
+        except Exception:
+            pass
+
+    def _al_salir_vista(self, event=None) -> None:
+        """Desvincula los eventos globales de rueda al salir de VistaInicio."""
+        try:
+            self.unbind_all("<MouseWheel>")
+            self.unbind_all("<Button-4>")
+            self.unbind_all("<Button-5>")
+        except Exception:
+            pass
+
+    def _al_mousewheel(self, event) -> None:
+        """Maneja el desplazamiento vertical con la rueda del ratón."""
+        try:
+            if not self.winfo_exists():
+                return
+            if event.delta:
+                # En Windows event.delta suele ser múltiplo de 120
+                self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif getattr(event, "num", None) == 4:
+                # Linux scroll up
+                self.canvas.yview_scroll(-1, "units")
+            elif getattr(event, "num", None) == 5:
+                # Linux scroll down
+                self.canvas.yview_scroll(1, "units")
+        except Exception:
+            pass
+
+    def resetear_scroll(self) -> None:
+        """Reinicia la posición de scroll al inicio superior."""
+        try:
+            if hasattr(self, "canvas") and self.canvas.winfo_exists():
+                self.canvas.yview_moveto(0.0)
+        except Exception:
+            pass
 
     # Construye los elementos visuales de la vista de inicio
     def _construir_contenido(self) -> None:
-        # Tarjeta central con sombra simulada
+        # Tarjeta central responsive: se expande horizontalmente ocupando el ancho del canvas
         self.card_central = ctk.CTkFrame(
-            self,
+            self.frame_interior,
             corner_radius=12,
             fg_color="#1e1e1e",
             border_width=1,
-            border_color="#333333",
-            width=760
+            border_color="#333333"
         )
-        self.card_central.grid(row=1, column=0, padx=30, pady=20, sticky="n")
+        self.card_central.pack(fill="x", expand=True, padx=4, pady=(8, 14))
 
         # 1. Cabecera y logotipo del proyecto
         lbl_icono = ctk.CTkLabel(
             self.card_central,
             text="🎬",
-            font=("Arial", 44)
+            font=("Arial", 38)
         )
-        lbl_icono.pack(pady=(24, 4))
+        lbl_icono.pack(pady=(14, 2))
 
         lbl_titulo = ctk.CTkLabel(
             self.card_central,
             text="PrendeClips",
-            font=("Arial", 26, "bold"),
+            font=("Arial", 24, "bold"),
             text_color="#ffffff"
         )
-        lbl_titulo.pack(pady=(0, 4))
+        lbl_titulo.pack(pady=(0, 2))
 
         lbl_subtitulo = ctk.CTkLabel(
             self.card_central,
             text="Extracción Inteligente de Momentos Destacados de Twitch con IA",
-            font=("Arial", 13),
+            font=("Arial", 12),
             text_color="#aaaaaa"
         )
-        lbl_subtitulo.pack(pady=(0, 16))
+        lbl_subtitulo.pack(pady=(0, 10))
 
         # 2. Resumen visual del Pipeline (Fases 1 a 5)
         self._construir_pasos_pipeline()
 
-        # 3. Formulario de entrada: URL de Twitch
+        # 3. Formulario de entrada: Streamer o URL de Twitch
         frame_input = ctk.CTkFrame(self.card_central, fg_color="transparent")
-        frame_input.pack(fill="x", padx=40, pady=(10, 14))
+        frame_input.pack(fill="x", padx=36, pady=(6, 10))
 
+        # 3.0 Búsqueda rápida de directos recientes por streamer
+        frame_streamer = ctk.CTkFrame(
+            frame_input,
+            fg_color="#18181b",
+            corner_radius=8,
+            border_width=1,
+            border_color="#333333"
+        )
+        frame_streamer.pack(fill="x", pady=(0, 10))
+
+        lbl_streamer = ctk.CTkLabel(
+            frame_streamer,
+            text="Buscar directos recientes por streamer:",
+            font=("Arial", 11, "bold"),
+            text_color="#a970ff",
+            anchor="w"
+        )
+        lbl_streamer.pack(fill="x", padx=12, pady=(6, 2))
+
+        fila_streamer = ctk.CTkFrame(frame_streamer, fg_color="transparent")
+        fila_streamer.pack(fill="x", padx=12, pady=(0, 6))
+
+        self.entry_streamer = ctk.CTkEntry(
+            fila_streamer,
+            placeholder_text="Nombre del streamer (ej: ibai)...",
+            font=("Arial", 12),
+            height=34,
+            corner_radius=6,
+            border_color="#444444"
+        )
+        self.entry_streamer.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.entry_streamer.bind("<Return>", lambda e: self._al_buscar_streamer())
+
+        self.btn_buscar_streamer = ctk.CTkButton(
+            fila_streamer,
+            text="🔍 Buscar directos",
+            font=("Arial", 12, "bold"),
+            height=34,
+            width=140,
+            corner_radius=6,
+            fg_color="#6441a5",
+            hover_color="#7d5bbe",
+            command=self._al_buscar_streamer
+        )
+        self.btn_buscar_streamer.pack(side="right")
+
+        self.cmb_vods_recientes = ctk.CTkComboBox(
+            frame_streamer,
+            values=["Seleccionar directo reciente..."],
+            font=("Arial", 11),
+            height=32,
+            corner_radius=6,
+            command=self._al_seleccionar_vod_reciente
+        )
+        self.cmb_vods_recientes.set("Seleccionar directo reciente...")
+        self.cmb_vods_recientes.pack(fill="x", padx=12, pady=(0, 8))
+
+        # 3.1 Formulario manual: URL o ID del directo
         lbl_input = ctk.CTkLabel(
             frame_input,
-            text="URL o ID del directo de Twitch (VOD):",
-            font=("Arial", 12, "bold"),
+            text="O introduce la URL o ID del directo manualmente:",
+            font=("Arial", 11, "bold"),
             text_color="#cccccc",
             anchor="w"
         )
-        lbl_input.pack(fill="x", pady=(0, 6))
+        lbl_input.pack(fill="x", pady=(0, 4))
 
         self.entry_url = ctk.CTkEntry(
             frame_input,
             placeholder_text="https://www.twitch.tv/videos/2873857636",
-            font=("Arial", 13),
-            height=44,
+            font=("Arial", 12),
+            height=40,
             corner_radius=8,
             border_color="#444444"
         )
-        self.entry_url.pack(fill="x", pady=(0, 12))
+        self.entry_url.pack(fill="x", pady=(0, 8))
 
         # Permite pulsar 'Enter' directamente en la caja de texto para lanzar
         self.entry_url.bind("<Return>", lambda e: self._al_pulsar_procesar())
@@ -250,8 +478,8 @@ class VistaInicio(ctk.CTkFrame):
         self.btn_procesar = ctk.CTkButton(
             frame_input,
             text="🚀  Procesar y Extraer Clips",
-            font=("Arial", 14, "bold"),
-            height=46,
+            font=("Arial", 13, "bold"),
+            height=42,
             corner_radius=8,
             fg_color="#1f6aa5",
             hover_color="#144870",
@@ -261,36 +489,36 @@ class VistaInicio(ctk.CTkFrame):
 
         # 5. Barra de progreso y texto de fase actual
         self.frame_feedback = ctk.CTkFrame(self.card_central, fg_color="#181818", corner_radius=8)
-        self.frame_feedback.pack(fill="x", padx=40, pady=(6, 16))
+        self.frame_feedback.pack(fill="x", padx=36, pady=(4, 10))
 
         self.lbl_estado = ctk.CTkLabel(
             self.frame_feedback,
             text="Listo para procesar. Pega una URL de Twitch y pulsa el botón.",
-            font=("Arial", 12),
+            font=("Arial", 11),
             text_color="#9e9e9e"
         )
-        self.lbl_estado.pack(pady=(12, 6), padx=15)
+        self.lbl_estado.pack(pady=(8, 3), padx=15)
 
         self.barra_progreso = ctk.CTkProgressBar(
             self.frame_feedback,
-            height=8,
-            corner_radius=4,
+            height=6,
+            corner_radius=3,
             fg_color="#2b2b2b",
             progress_color="#1f6aa5"
         )
-        self.barra_progreso.pack(fill="x", padx=20, pady=(0, 14))
+        self.barra_progreso.pack(fill="x", padx=20, pady=(0, 8))
         self.barra_progreso.set(0.0)
 
         # 6. Botones secundarios de utilidad (3 columnas equilibradas)
         frame_utilidades = ctk.CTkFrame(self.card_central, fg_color="transparent")
-        frame_utilidades.pack(fill="x", padx=40, pady=(0, 24))
+        frame_utilidades.pack(fill="x", padx=36, pady=(0, 16))
         frame_utilidades.grid_columnconfigure((0, 1, 2), weight=1)
 
         self.btn_abrir_carpeta = ctk.CTkButton(
             frame_utilidades,
             text="📁 Abrir Carpeta",
             font=("Arial", 11),
-            height=32,
+            height=30,
             fg_color="#2c2c2c",
             hover_color="#3a3a3a",
             command=self._abrir_carpeta
@@ -301,7 +529,7 @@ class VistaInicio(ctk.CTkFrame):
             frame_utilidades,
             text="👁 Ver clips guardados",
             font=("Arial", 11),
-            height=32,
+            height=30,
             fg_color="#2c2c2c",
             hover_color="#3a3a3a",
             command=self._al_cargar_existentes
@@ -312,7 +540,7 @@ class VistaInicio(ctk.CTkFrame):
             frame_utilidades,
             text="🗑️ Borrar clips anteriores",
             font=("Arial", 11),
-            height=32,
+            height=30,
             fg_color="#37474f",
             hover_color="#455a64",
             command=self._al_pulsar_purgar
@@ -354,6 +582,89 @@ class VistaInicio(ctk.CTkFrame):
                     text_color="#555555"
                 )
                 lbl_flecha.pack(side="left", padx=2)
+
+    # -------------------------------------------------------------------------
+    # Gestión de Búsqueda de Directos por Streamer (yt-dlp)
+    # -------------------------------------------------------------------------
+    def _al_buscar_streamer(self) -> None:
+        """Inicia la búsqueda asíncrona de los últimos directos del streamer."""
+        if self._procesando:
+            return
+
+        canal = self.entry_streamer.get().strip()
+        if not canal:
+            self.lbl_estado.configure(
+                text="Por favor, escribe el nombre de un streamer para buscar sus directos.",
+                text_color="#e06c75"
+            )
+            return
+
+        # Feedback visual mientras se ejecuta la búsqueda
+        self.btn_buscar_streamer.configure(state="disabled", text="⏳ Buscando...")
+        self.cmb_vods_recientes.set(f"Buscando directos de '{canal}'...")
+        self.lbl_estado.configure(
+            text=f"Consultando directos recientes de '{canal}' con yt-dlp...",
+            text_color="#a970ff"
+        )
+
+        threading.Thread(
+            target=self._hilo_buscar_streamer,
+            args=(canal,),
+            daemon=True
+        ).start()
+
+    def _hilo_buscar_streamer(self, canal: str) -> None:
+        """Hilo en segundo plano para no congelar la GUI durante la llamada a yt-dlp."""
+        vods = []
+        if obtener_ultimos_vods is not None:
+            try:
+                vods = obtener_ultimos_vods(canal, limite=5)
+            except Exception as e:
+                print(f"[VistaInicio] Error al buscar VODs de '{canal}': {e}")
+                vods = []
+
+        # Retornamos los resultados al hilo principal de Tkinter
+        self.after(0, self._actualizar_combo_vods, canal, vods)
+
+    def _actualizar_combo_vods(self, canal: str, vods: list) -> None:
+        """Puebla el Combobox con el formato '[Fecha] Título (Duración)'."""
+        self.btn_buscar_streamer.configure(state="normal", text="🔍 Buscar directos")
+
+        if not vods:
+            self.cmb_vods_recientes.configure(values=["No se encontraron directos"])
+            self.cmb_vods_recientes.set(f"No se encontraron directos para '{canal}'")
+            self.lbl_estado.configure(
+                text=f"No se encontraron directos recientes para '{canal}'. Comprueba el nombre o escribe la URL manual.",
+                text_color="#e5c07b"
+            )
+            self._mapa_vods = {}
+            return
+
+        self._mapa_vods = {}
+        opciones = []
+        for v in vods:
+            # Formato requerido: "[Fecha] Título (Duración)"
+            texto_item = v.texto_display
+            opciones.append(texto_item)
+            self._mapa_vods[texto_item] = v
+
+        self.cmb_vods_recientes.configure(values=opciones)
+        self.cmb_vods_recientes.set(f"Seleccionar directo ({len(vods)} disponibles)...")
+        self.lbl_estado.configure(
+            text=f"Directos encontrados para '{canal}'. Selecciona uno del desplegable para rellenar la URL.",
+            text_color="#98c379"
+        )
+
+    def _al_seleccionar_vod_reciente(self, eleccion: str) -> None:
+        """Rellena automáticamente el campo principal de URL al elegir un directo."""
+        vod = getattr(self, "_mapa_vods", {}).get(eleccion)
+        if vod is not None and getattr(vod, "url", None):
+            self.entry_url.delete(0, "end")
+            self.entry_url.insert(0, vod.url)
+            self.lbl_estado.configure(
+                text=f"Directo seleccionado: {vod.titulo} ({vod.duracion_str})",
+                text_color="#98c379"
+            )
 
     # Invoca el callback configurado al pulsar el botón principal
     def _al_pulsar_procesar(self) -> None:
@@ -407,11 +718,11 @@ class VistaInicio(ctk.CTkFrame):
             border_width=1,
             border_color="#2c2c2c"
         )
-        frame_config.pack(fill="x", pady=(0, 14))
+        frame_config.pack(fill="x", pady=(0, 10))
 
         # Cabecera de la sección
         frame_header = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_header.pack(fill="x", padx=16, pady=(10, 8))
+        frame_header.pack(fill="x", padx=16, pady=(8, 4))
 
         lbl_titulo_config = ctk.CTkLabel(
             frame_header,
@@ -435,7 +746,7 @@ class VistaInicio(ctk.CTkFrame):
 
         # a) Control deslizante (CTkSlider) para el número de clips (3 a 15, default 6)
         frame_slider = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_slider.pack(fill="x", padx=16, pady=(0, 10))
+        frame_slider.pack(fill="x", padx=16, pady=(0, 8))
 
         frame_slider_header = ctk.CTkFrame(frame_slider, fg_color="transparent")
         frame_slider_header.pack(fill="x", pady=(0, 4))
@@ -477,7 +788,7 @@ class VistaInicio(ctk.CTkFrame):
 
         # b y c) Selectores en 2 columnas: Perfil de Detección y Sensibilidad
         frame_selectores = ctk.CTkFrame(frame_config, fg_color="transparent")
-        frame_selectores.pack(fill="x", padx=16, pady=(0, 12))
+        frame_selectores.pack(fill="x", padx=16, pady=(0, 10))
         frame_selectores.grid_columnconfigure(0, weight=3)
         frame_selectores.grid_columnconfigure(1, weight=2)
 
@@ -572,6 +883,12 @@ class VistaInicio(ctk.CTkFrame):
     def establecer_modo_procesando(self, activo: bool) -> None:
         self._procesando = activo
         if activo:
+            if hasattr(self, "entry_streamer"):
+                self.entry_streamer.configure(state="disabled")
+            if hasattr(self, "btn_buscar_streamer"):
+                self.btn_buscar_streamer.configure(state="disabled")
+            if hasattr(self, "cmb_vods_recientes"):
+                self.cmb_vods_recientes.configure(state="disabled")
             self.entry_url.configure(state="disabled")
             self.slider_num_clips.configure(state="disabled")
             self.opt_perfil.configure(state="disabled")
@@ -587,6 +904,12 @@ class VistaInicio(ctk.CTkFrame):
                 text_color="#1f6aa5"
             )
         else:
+            if hasattr(self, "entry_streamer"):
+                self.entry_streamer.configure(state="normal")
+            if hasattr(self, "btn_buscar_streamer"):
+                self.btn_buscar_streamer.configure(state="normal")
+            if hasattr(self, "cmb_vods_recientes"):
+                self.cmb_vods_recientes.configure(state="normal")
             self.entry_url.configure(state="normal")
             self.slider_num_clips.configure(state="normal")
             self.opt_perfil.configure(state="normal")

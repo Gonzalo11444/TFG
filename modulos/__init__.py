@@ -17,6 +17,7 @@ from modulos.seleccion_temporal import (
 from modulos.clasificador_clip import ClasificadorVisual
 from modulos.procesamiento_video import RenderizadorVertical
 from modulos.pipeline import PipelineClips
+from modulos.buscador_streamer import DirectoReciente, obtener_ultimos_vods
 
 __all__ = [
     "TwitchDescarga",
@@ -31,5 +32,7 @@ __all__ = [
     "CandidatoClip",
     "ClasificadorVisual",
     "RenderizadorVertical",
-    "PipelineClips"
+    "PipelineClips",
+    "DirectoReciente",
+    "obtener_ultimos_vods"
 ]
