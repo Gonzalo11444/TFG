@@ -42,7 +42,9 @@ class PipelineClips:
         top_k: int = 6,
         duracion_clip: int = 30,
         margen_previo: int = 15,
-        exclusion_deadzone: int = 45
+        exclusion_deadzone: int = 90,
+        ventana_supresion: int = 90,
+        umbral_min_mensajes_chat: int = 3
     ):
         # Localizamos el directorio raíz del proyecto
         self.directorio_raiz = Path(__file__).resolve().parents[1]
@@ -70,6 +72,8 @@ class PipelineClips:
         self.duracion_clip = duracion_clip
         self.margen_previo = margen_previo
         self.exclusion_deadzone = exclusion_deadzone
+        self.ventana_supresion = ventana_supresion
+        self.umbral_min_mensajes_chat = umbral_min_mensajes_chat
 
         # Localizamos el ejecutable de TwitchDownloaderCLI
         self.ruta_twitch_cli = self._localizar_twitch_cli()
@@ -175,7 +179,8 @@ class PipelineClips:
             peso_chat=peso_chat,
             duracion_clip=self.duracion_clip,
             margen_previo=self.margen_previo,
-            exclusion_deadzone=self.exclusion_deadzone,
+            ventana_supresion=self.ventana_supresion,
+            umbral_min_mensajes_chat=self.umbral_min_mensajes_chat,
             umbral_score=umbral_score
         )
 

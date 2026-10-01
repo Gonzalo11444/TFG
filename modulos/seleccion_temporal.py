@@ -58,15 +58,24 @@ class SelectorMomentos:
         peso_chat: float = 0.5,
         duracion_clip: int = 40,
         margen_previo: int = 25,
-        exclusion_deadzone: int = 60,
-        umbral_score: float = 0.0
+        exclusion_deadzone: int | None = None,
+        umbral_score: float = 0.0,
+        umbral_min_mensajes_chat: int = 3,
+        ventana_supresion: int = 90
     ):
         self.peso_audio = peso_audio
         self.peso_chat = peso_chat
         self.duracion_clip = duracion_clip
         self.margen_previo = margen_previo
-        self.exclusion_deadzone = exclusion_deadzone
         self.umbral_score = umbral_score
+        self.umbral_min_mensajes_chat = umbral_min_mensajes_chat
+
+        # Sincronización entre ventana_supresion y el parámetro histórico exclusion_deadzone
+        if exclusion_deadzone is not None and ventana_supresion == 90:
+            self.ventana_supresion = exclusion_deadzone
+        else:
+            self.ventana_supresion = ventana_supresion
+        self.exclusion_deadzone = self.ventana_supresion
 
     def _normalizar_audio(self, valores: list[float], ventana_suavizado: int = 5) -> list[float]:
         """
@@ -80,29 +89,44 @@ class SelectorMomentos:
         suavizado = suavizar_media_movil(norm, ventana=ventana_suavizado)
         return [round(float(v), 4) for v in suavizado]
 
-    def _normalizar_min_max(self, valores: list[float]) -> list[float]: #Escala los datos al rango [0, 1]
+    def _normalizar_min_max(self, valores: list[float], umbral_minimo: float | None = None) -> list[float]:
+        """
+        Escala los datos al rango [0, 1].
+        Si se especifica un umbral mínimo (por defecto umbral_min_mensajes_chat),
+        cualquier segundo con una cantidad menor a este umbral recibe forzosamente 0.0.
+        Esto evita que en canales con poca interacción, 1 o 2 comentarios aislados
+        alcancen un score del 100% (1.0) por el escalado Min-Max.
+        """
         if not valores:
             return []
 
-        min_v = min(valores)
+        if umbral_minimo is None:
+            umbral_minimo = getattr(self, "umbral_min_mensajes_chat", 0.0)
+
+        # Si el pico máximo no alcanza el umbral mínimo de mensajes,
+        # toda la señal se considera inactiva/ruido de fondo y se anula a 0.0
         max_v = max(valores)
+        if max_v < umbral_minimo:
+            return [0.0] * len(valores)
+
+        min_v = min(valores)
         rango = max_v - min_v
 
         # Si todos los valores son iguales, evitamos dividir por cero
         if rango == 0:
-            resultado = []
-            for _ in valores:
-                resultado.append(0.0)
-            return resultado
+            return [0.0] * len(valores)
 
-        # Escalado normal
+        # Escalado Min-Max aplicando el umbral mínimo: valores < umbral_minimo reciben 0.0
         resultado = []
         for v in valores:
-            valor_normalizado = (v - min_v) / rango
-            resultado.append(valor_normalizado)
+            if v < umbral_minimo:
+                resultado.append(0.0)
+            else:
+                resultado.append((v - min_v) / rango)
         return resultado
 
-    def calcular_puntuaciones(self, serie: list[PuntoTemporal]) -> list[float]: #Obtiene la puntuación combinada de las señales
+    def calcular_puntuaciones(self, serie: list[PuntoTemporal]) -> list[float]:
+        """Obtiene la puntuación combinada de las señales (audio y chat)."""
         if not serie:
             return []
 
@@ -113,9 +137,9 @@ class SelectorMomentos:
             volumenes.append(p.volumen_dbfs)
             chats.append(float(p.mensajes_chat))
 
-        # Normalizamos audio de forma adaptativa y chat mediante min-max
+        # Normalizamos audio de forma adaptativa y chat mediante min-max con umbral mínimo
         norm_audio = self._normalizar_audio(volumenes)
-        norm_chat = self._normalizar_min_max(chats)
+        norm_chat = self._normalizar_min_max(chats, umbral_minimo=self.umbral_min_mensajes_chat)
 
         # Calculamos la media ponderada segundo a segundo
         scores = []
@@ -130,7 +154,13 @@ class SelectorMomentos:
         serie: list[PuntoTemporal],
         top_k: int = 6,
         umbral_minimo: float | None = None
-    ) -> list[CandidatoClip]: #Selecciona los mejores clips usando una tecnica llamada Supresión No Máxima (NMS)  
+    ) -> list[CandidatoClip]:
+        """
+        Selecciona los mejores clips usando Supresión No Máxima (NMS).
+        Al escoger el clip con mayor puntuación, los segundos dentro del rango
+        [clip.segundo_inicio - ventana_supresion, clip.segundo_fin + ventana_supresion]
+        quedan completamente descartados para evitar fragmentos contiguos o repetidos.
+        """
         if not serie:
             return []
 
@@ -173,9 +203,11 @@ class SelectorMomentos:
             )
             candidatos.append(candidato)
 
-            # 3. Supresión No Máxima (NMS): Ponemos a -1.0 un radio par no sacar mismos clips
-            deadzone_inicio = max(0, pico_idx - self.exclusion_deadzone)
-            deadzone_fin = min(total_segundos, pico_idx + self.exclusion_deadzone + 1)
+            # 3. Supresión No Máxima (NMS): Invalidamos los segundos dentro del rango
+            # [clip.segundo_inicio - ventana_supresion, clip.segundo_fin + ventana_supresion]
+            # para evitar fragmentos contiguos o repetidos de la misma jugada.
+            deadzone_inicio = max(0, candidato.segundo_inicio - self.ventana_supresion)
+            deadzone_fin = min(total_segundos, candidato.segundo_fin + self.ventana_supresion + 1)
 
             for i in range(deadzone_inicio, deadzone_fin):
                 scores_disponibles[i] = -1.0
@@ -281,7 +313,8 @@ if __name__ == "__main__":
             peso_chat=0.5,
             duracion_clip=30,
             margen_previo=15,
-            exclusion_deadzone=45
+            ventana_supresion=45,
+            umbral_min_mensajes_chat=3
         )
 
         num_clips = 1 if LIMITE_SEGUNDOS else 5
