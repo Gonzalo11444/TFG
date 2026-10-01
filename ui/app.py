@@ -49,9 +49,21 @@ except ImportError:
     PipelineClips = None
 
 try:
-    from modulos.procesamiento_video import RenderizadorVertical
+    from modulos.renderizador_vertical import RenderizadorVertical
 except ImportError:
-    RenderizadorVertical = None
+    try:
+        from modulos.procesamiento_video import RenderizadorVertical
+    except ImportError:
+        RenderizadorVertical = None
+
+try:
+    from ui.componentes.dialogo_split import DialogoConfigurarSplit
+except ImportError:
+    try:
+        from componentes.dialogo_split import DialogoConfigurarSplit
+    except ImportError:
+        DialogoConfigurarSplit = None
+
 
 
 class VentanaExitoRender(ctk.CTkToplevel):
@@ -149,6 +161,12 @@ class AppPrendeClips(ctk.CTk):
         self.peso_chat = 0.5
         self.perfil_nombre = "Equilibrado (50% Audio / 50% Chat)"
         self._cargar_metadatos_extraccion_disco()
+
+        # Configuración persistente en sesión para renderizado vertical (Blur vs Split)
+        self.estilo_render_vertical = "Fondo desenfocado (Blur)"
+        self.split_cam_crop: tuple[float, float, float, float] | None = None
+        self.split_game_crop: tuple[float, float, float, float] | None = None
+        self.split_crops_por_clip: dict[str, dict] = {}
 
         # Contenedor principal de vistas
         self._construir_vistas()
@@ -300,6 +318,7 @@ class AppPrendeClips(ctk.CTk):
         self.btn_volver_inicio.grid(row=0, column=0, padx=(10, 5), pady=8)
 
         # Etiqueta informativa del conteo de clips
+        # Etiqueta informativa del conteo de clips
         self.lbl_estado = ctk.CTkLabel(
             self.barra_inferior,
             text="Esperando selección...",
@@ -307,17 +326,43 @@ class AppPrendeClips(ctk.CTk):
         )
         self.lbl_estado.grid(row=0, column=1, sticky="w", padx=10, pady=8)
 
+        # Selector de estilo de renderizado (Blur vs Split)
+        self.cmb_estilo_render = ctk.CTkOptionMenu(
+            self.barra_inferior,
+            values=["Fondo desenfocado (Blur)", "Pantalla dividida (Split)"],
+            width=185,
+            font=("Arial", 11),
+            fg_color="#37474f",
+            button_color="#455a64",
+            button_hover_color="#546e7a",
+            command=self._al_cambiar_estilo_render
+        )
+        self.cmb_estilo_render.set(self.estilo_render_vertical)
+        self.cmb_estilo_render.grid(row=0, column=2, padx=(4, 2), pady=8)
+
+        # Botón para ajustar zonas de cámara y gameplay
+        self.btn_configurar_split = ctk.CTkButton(
+            self.barra_inferior,
+            text="📐 Ajustar Zonas",
+            width=115,
+            font=("Arial", 11),
+            fg_color="#0277bd",
+            hover_color="#01579b",
+            command=self._abrir_dialogo_split
+        )
+        self.btn_configurar_split.grid(row=0, column=3, padx=2, pady=8)
+
         # Botón para exportar selección a JSON
         self.btn_exportar_json = ctk.CTkButton(
             self.barra_inferior,
             text="💾 Guardar JSON",
-            width=120,
+            width=115,
             font=("Arial", 11),
             fg_color="#37474f",
             hover_color="#455a64",
             command=self._exportar_seleccion
         )
-        self.btn_exportar_json.grid(row=0, column=2, padx=5, pady=8)
+        self.btn_exportar_json.grid(row=0, column=4, padx=4, pady=8)
 
         # Botón para renderizar clips aprobados a vertical 9:16
         self.btn_render_vertical = ctk.CTkButton(
@@ -328,7 +373,7 @@ class AppPrendeClips(ctk.CTk):
             hover_color="#1b5e20",
             command=self._renderizar_verticales
         )
-        self.btn_render_vertical.grid(row=0, column=3, padx=(5, 10), pady=8)
+        self.btn_render_vertical.grid(row=0, column=5, padx=(4, 10), pady=8)
 
     # Cambia la visualización a la vista de bienvenida y libera descriptores de archivo
     def mostrar_vista_inicio(self) -> None:
@@ -375,6 +420,10 @@ class AppPrendeClips(ctk.CTk):
 
         if hasattr(self, "btn_volver_inicio"):
             self.btn_volver_inicio.configure(state=estado)
+        if hasattr(self, "cmb_estilo_render"):
+            self.cmb_estilo_render.configure(state=estado)
+        if hasattr(self, "btn_configurar_split"):
+            self.btn_configurar_split.configure(state=estado)
         if hasattr(self, "btn_exportar_json"):
             self.btn_exportar_json.configure(state=estado)
         if hasattr(self, "btn_render_vertical"):
@@ -755,6 +804,122 @@ class AppPrendeClips(ctk.CTk):
         )
         return ruta_salida
 
+    # Cambia el estilo de renderizado vertical y asiste al usuario si elige Pantalla Dividida
+    def _al_cambiar_estilo_render(self, nuevo_estilo: str) -> None:
+        self.estilo_render_vertical = nuevo_estilo
+        if "dividida" in nuevo_estilo.lower() or "split" in nuevo_estilo.lower():
+            if self.split_cam_crop is None or self.split_game_crop is None:
+                self._abrir_dialogo_split()
+
+    # Abre el modal interactivo de recorte para pantalla dividida (Cámara + Gameplay)
+    def _abrir_dialogo_split(self) -> None:
+        if not self.panel_clips.clips or len(self.panel_clips.clips) == 0:
+            messagebox.showwarning(
+                "Sin clips disponibles",
+                "Carga o analiza clips candidatos antes de configurar las zonas de pantalla dividida."
+            )
+            return
+
+        # 1. Obtener obligatoriamente el clip activo (reproduciéndose o seleccionado)
+        clip_actual = None
+        if hasattr(self, "reproductor") and self.reproductor.ruta_actual:
+            for c in self.panel_clips.clips:
+                if c.ruta_video and Path(c.ruta_video).resolve() == Path(self.reproductor.ruta_actual).resolve():
+                    clip_actual = c
+                    break
+
+        if clip_actual is None and hasattr(self.panel_clips, "obtener_clip_seleccionado"):
+            clip_actual = self.panel_clips.obtener_clip_seleccionado()
+
+        if clip_actual is None:
+            idx = getattr(self.panel_clips, "_indice_seleccionado", None)
+            if idx is not None and 0 <= idx < len(self.panel_clips.clips):
+                clip_actual = self.panel_clips.clips[idx]
+
+        if clip_actual is None and self.panel_clips.clips:
+            clip_actual = self.panel_clips.clips[0]
+
+        if clip_actual is None or not clip_actual.ruta_video or not Path(clip_actual.ruta_video).exists():
+            messagebox.showwarning(
+                "Vídeo no encontrado",
+                "No se encontró el clip de vídeo en disco para extraer el fotograma de referencia."
+            )
+            return
+
+        ruta_video = Path(clip_actual.ruta_video)
+        nombre_clip = ruta_video.name
+
+        # 2. Extraer obligatoriamente fotograma en el segundo medio (t = duracion / 2)
+        segundo_captura = None
+        try:
+            cmd_probe = [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(ruta_video)
+            ]
+            res = subprocess.run(cmd_probe, capture_output=True, text=True, check=False)
+            if res.returncode == 0 and res.stdout.strip():
+                dur = float(res.stdout.strip())
+                segundo_captura = max(0.5, dur / 2.0)
+        except Exception:
+            segundo_captura = None
+
+        if segundo_captura is None:
+            dur_estimada = clip_actual.segundo_fin - clip_actual.segundo_inicio
+            segundo_captura = max(0.5, dur_estimada / 2.0) if dur_estimada > 0 else 1.0
+
+        # 3. Zonas iniciales: si este clip ya tenía un recorte configurado, usarlo; si no, plantilla por defecto
+        custom_clip = self.split_crops_por_clip.get(nombre_clip) or self.split_crops_por_clip.get(str(ruta_video.resolve()))
+        if custom_clip:
+            cam_inicial = custom_clip.get("cam_crop", custom_clip.get("cam"))
+            game_inicial = custom_clip.get("game_crop", custom_clip.get("game"))
+        else:
+            cam_inicial = self.split_cam_crop
+            game_inicial = self.split_game_crop
+
+        def on_guardar_split(cam_crop, game_crop, aplicar_todos=False):
+            # Guardamos específicamente para el clip activo
+            datos_crop = {
+                "cam_crop": cam_crop,
+                "game_crop": game_crop,
+                "cam": cam_crop,
+                "game": game_crop
+            }
+            self.split_crops_por_clip[nombre_clip] = datos_crop
+            self.split_crops_por_clip[str(ruta_video.resolve())] = datos_crop
+
+            # Si el usuario eligió aplicar como plantilla a todos o aún no hay plantilla global
+            if aplicar_todos or self.split_cam_crop is None:
+                self.split_cam_crop = cam_crop
+                self.split_game_crop = game_crop
+
+            self.estilo_render_vertical = "Pantalla dividida (Split)"
+            self.cmb_estilo_render.set("Pantalla dividida (Split)")
+
+            if aplicar_todos:
+                self.lbl_estado.configure(
+                    text=f"✅ Zonas guardadas para '{nombre_clip}' y aplicadas por defecto a los demás clips."
+                )
+            else:
+                self.lbl_estado.configure(
+                    text=f"✅ Zonas guardadas específicamente para el clip activo '{nombre_clip}'."
+                )
+
+        if DialogoConfigurarSplit is None:
+            messagebox.showerror("Error", "No se pudo cargar el componente DialogoConfigurarSplit.")
+            return
+
+        DialogoConfigurarSplit(
+            master=self,
+            ruta_video=ruta_video,
+            cam_crop_inicial=cam_inicial,
+            game_crop_inicial=game_inicial,
+            segundo_captura=segundo_captura,
+            nombre_clip=nombre_clip,
+            on_guardar=on_guardar_split
+        )
+
     # Ejecuta en segundo plano la Fase 5: reencuadre vertical con FFmpeg
     def _renderizar_verticales(self) -> None:
         if self._renderizando_vertical or self._analizando_ia:
@@ -778,11 +943,29 @@ class AppPrendeClips(ctk.CTk):
         if ruta_json is None:
             return
 
+        # Determinamos el modo de renderizado y coordenadas
+        estilo_sel = self.cmb_estilo_render.get()
+        if "dividida" in estilo_sel.lower() or "split" in estilo_sel.lower():
+            if self.split_cam_crop is None and not self.split_crops_por_clip:
+                print("[App] Aviso: Pantalla dividida seleccionada pero sin zonas configuradas. Aplicando fondo desenfocado por seguridad.")
+                modo_render = "blur"
+                cam_crop = None
+                game_crop = None
+            else:
+                modo_render = "split"
+                cam_crop = self.split_cam_crop
+                game_crop = self.split_game_crop
+        else:
+            modo_render = "blur"
+            cam_crop = None
+            game_crop = None
+
         self._renderizando_vertical = True
         self._bloquear_navegacion_validacion(True)
         self.btn_render_vertical.configure(state="disabled", text="⏳ Renderizando...")
+        desc_modo = "Pantalla Dividida" if modo_render == "split" else "Fondo Desenfocado"
         self.lbl_estado.configure(
-            text=f"Iniciando renderizado vertical 9:16 de {len(aprobados)} clips..."
+            text=f"Iniciando renderizado vertical ({desc_modo}) de {len(aprobados)} clips..."
         )
 
         def tarea_fondo():
@@ -807,7 +990,11 @@ class AppPrendeClips(ctk.CTk):
 
                 videos_generados = renderizador.procesar_clips_aprobados(
                     ruta_json=ruta_json,
-                    callback_progreso=callback_progreso_render
+                    callback_progreso=callback_progreso_render,
+                    modo=modo_render,
+                    cam_crop=cam_crop,
+                    game_crop=game_crop,
+                    crops_por_clip=self.split_crops_por_clip
                 )
 
                 def al_terminar():

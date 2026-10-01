@@ -394,6 +394,18 @@ class PanelListaClips(ctk.CTkFrame):
         if self.on_clips_actualizados is not None:
             self.on_clips_actualizados()
 
+    @property
+    def indice_seleccionado(self) -> int | None:
+        return self._indice_seleccionado
+
+    # Devuelve el clip actualmente seleccionado en la lista o el primero disponible
+    def obtener_clip_seleccionado(self) -> CandidatoClip | None:
+        if not self.clips or len(self.clips) == 0:
+            return None
+        if self._indice_seleccionado is not None and 0 <= self._indice_seleccionado < len(self.clips):
+            return self.clips[self._indice_seleccionado]
+        return self.clips[0]
+
     # Devuelve una lista tradicional con los clips que tengan el estado 'Aprobado'
     def obtener_clips_aprobados(self) -> list[CandidatoClip]:
         if not self.clips or len(self.clips) == 0:
